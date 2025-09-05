@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+*.log
+output/*.csv
+output/*.png
+data/*.csv
+!data/.gitkeep
+*.parquet
+.mypy_cache/
+.pytest_cache/

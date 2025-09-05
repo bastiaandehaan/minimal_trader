@@ -1,0 +1,23 @@
+# Minimal Trading Configuration
+trading:
+  symbol: "GER40.cash"
+  timeframe: "H1"
+  initial_capital: 10000
+  risk_per_trade: 1.0  # percentage
+
+strategy:
+  sma_period: 20
+  atr_period: 14
+  sl_multiplier: 1.5
+  tp_multiplier: 2.5
+  volume_threshold: 1.0  # times average
+
+backtest:
+  start_date: "2024-01-01"
+  end_date: null  # null = until today
+  commission: 0.0002  # 2 bps per side
+
+live:
+  mode: "paper"  # paper or live
+  check_interval: 3600  # seconds
+  max_positions: 1

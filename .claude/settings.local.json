@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(venvScripts:*)",
+      "Bash(venv/Scripts/activate:*)",
+      "Bash(pip install:*)",
+      "Bash(venv\\\\Scripts\\\\python.exe:*)",
+      "Read(/C:\\Users\\basti\\PycharmProjects\\minimal_trader_setup\\minimal_trader\\venv\\Scripts/**)",
+      "Bash(venv/Scripts/python.exe:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
