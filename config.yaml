@@ -5,11 +5,11 @@ trading:
   risk_per_trade: 1.0
 
 strategy:
-  sma_period: 200      # 200 min = ~3 uur
-  atr_period: 60       # 60 min = 1 uur  
-  sl_mult: 2.0         # Ruimere stop voor M1 noise
-  tp_mult: 3.0         # Betere RR ratio
-  volume_threshold: 1.0
+  sma_period: 20
+  atr_period: 14
+  sl_multiplier: 1.5
+  tp_multiplier: 2.5
+  volume_threshold: 0.0   # <— TEMP uitzetten
 
 backtest:
   commission: 0.0002
