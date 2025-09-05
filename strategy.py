@@ -10,7 +10,7 @@ import pandas as pd
 class SignalType(Enum):
     NONE = 0
     BUY = 1
-    SELL = -1  # reversal/exit only; no short entries in v1
+    SELL = -1  # exit trigger only
 
 
 @dataclass(frozen=True)
@@ -29,11 +29,11 @@ class StrategyParams:
     atr_period: int = 14
     sl_mult: float = 1.5
     tp_mult: float = 2.5
-    volume_threshold: float = 1.0  # x average
+    volume_threshold: float = 1.0
 
 
 class Strategy:
-    """Pure strategy: indicators + signal-at-index. No state, no side effects."""
+    """Pure strategy: indicators + signal generation. No state."""
 
     def __init__(self, params: StrategyParams = StrategyParams()):
         self.p = params
@@ -43,11 +43,10 @@ class Strategy:
         df = df.copy()
 
         # SMA
-        df["sma"] = df["close"].rolling(
-            self.p.sma_period, min_periods=self.p.sma_period
-        ).mean()
+        df["sma"] = df["close"].rolling(self.p.sma_period,
+            min_periods=self.p.sma_period).mean()
 
-        # ATR (classic TR)
+        # ATR
         high_low = df["high"] - df["low"]
         high_close = (df["high"] - df["close"].shift()).abs()
         low_close = (df["low"] - df["close"].shift()).abs()
@@ -56,10 +55,8 @@ class Strategy:
 
         # Volume ratio
         if "volume" in df.columns:
-            df["volume_avg"] = df["volume"].rolling(
-                self.p.sma_period, min_periods=self.p.sma_period
-            ).mean()
-            # Avoid division by zero
+            df["volume_avg"] = df["volume"].rolling(self.p.sma_period,
+                min_periods=self.p.sma_period).mean()
             df["volume_ratio"] = df["volume"] / df["volume_avg"].replace(0, np.nan)
             df["volume_ratio"] = df["volume_ratio"].fillna(0.0)
         else:
@@ -71,72 +68,49 @@ class Strategy:
 
     def get_signal_at(self, df: pd.DataFrame, i: int) -> Tuple[Signal, dict]:
         """
-        Decide signal at bar index i using only info up to i (no look-ahead).
-
-        BUY when:
-          - classic cross above SMA, OR
-          - first bar after SMA becomes valid and close > SMA (first-window entry)
-        AND volume_ratio >= threshold AND ATR is finite/positive.
-
-        SELL (as exit/reversal only) on cross below SMA.
+        Generate signal at bar i using only data up to i (no look-ahead).
+        BUY: Classic SMA crossover with volume confirmation
+        SELL: Crossover below SMA (exit trigger)
         """
         warmup = max(self.p.sma_period, self.p.atr_period)
-        if i < warmup:
+
+        # Need warmup period + 1 previous bar for crossover detection
+        if i <= warmup:
             return Signal(SignalType.NONE), {}
 
         last = df.iloc[i]
         prev = df.iloc[i - 1]
 
-        prev_sma = prev["sma"]
-        prev_close = prev["close"]
+        # Both current and previous SMA must be valid
+        if not (np.isfinite(last["sma"]) and np.isfinite(prev["sma"])):
+            return Signal(SignalType.NONE), {}
 
-        # Classic cross rules
-        cross_above = (
-            np.isfinite(prev_sma) and (prev_close <= prev_sma) and (last["close"] > last["sma"])
-        )
-        cross_below = (
-            np.isfinite(prev_sma) and (prev_close >= prev_sma) and (last["close"] < last["sma"])
-        )
+        # Classic crossover detection
+        cross_above = (prev["close"] <= prev["sma"]) and (last["close"] > last["sma"])
+        cross_below = (prev["close"] >= prev["sma"]) and (last["close"] < last["sma"])
 
-        # First-window entry:
-        # index i-1 is the first bar with a valid SMA (prev.sma finite) and i-2 had no SMA yet
-        prev2_sma = df["sma"].iloc[i - 2] if i - 2 >= 0 else np.nan
-        first_window = np.isfinite(prev["sma"]) and not np.isfinite(prev2_sma)
-        first_window_above = first_window and (last["close"] > last["sma"])
+        # Volume confirmation
+        volume_ok = last.get("volume_ratio", 0.0) >= self.p.volume_threshold
 
-        # Volume check: inclusive so ratio==threshold passes
-        volume_ok = bool(last.get("volume_ratio", 0.0) >= self.p.volume_threshold)
-
-        meta = {
-            "close": float(last["close"]),
-            "sma": float(last["sma"]),
-            "atr": float(last["atr"]),
+        # Metadata
+        meta = {"close": float(last["close"]), "sma": float(last["sma"]),
+            "atr": float(last["atr"]) if np.isfinite(last["atr"]) else 0.0,
             "volume_ratio": float(last.get("volume_ratio", 1.0)),
-            "timestamp": last.name if hasattr(last, "name") else None,
-        }
+            "timestamp": last.name if hasattr(last, "name") else None, }
 
-        # Entry: long only in v1
-        if (cross_above or first_window_above) and volume_ok and np.isfinite(last["atr"]) and last["atr"] > 0:
+        # BUY signal
+        if cross_above and volume_ok and np.isfinite(last["atr"]) and last["atr"] > 0:
             entry = float(last["close"])
             stop = entry - float(last["atr"]) * self.p.sl_mult
             target = entry + float(last["atr"]) * self.p.tp_mult
-            sig = Signal(
-                type=SignalType.BUY,
-                entry=entry,
-                stop=stop,
-                target=target,
-                reason=f"BUY: {'first-window' if first_window_above else 'cross'} + vol {meta['volume_ratio']:.2f}x",
-                timestamp=meta["timestamp"],
-            )
-            return sig, meta
 
-        # Exit trigger (reversal)
+            return Signal(type=SignalType.BUY, entry=entry, stop=stop, target=target,
+                reason=f"BUY: SMA cross↑ + vol {meta['volume_ratio']:.2f}x",
+                timestamp=meta["timestamp"], ), meta
+
+        # SELL signal (exit trigger)
         if cross_below:
-            sig = Signal(
-                type=SignalType.SELL,
-                reason="SELL: cross↓ (reversal/exit)",
-                timestamp=meta["timestamp"],
-            )
-            return sig, meta
+            return Signal(type=SignalType.SELL, reason="SELL: SMA cross↓ (exit)",
+                timestamp=meta["timestamp"], ), meta
 
         return Signal(SignalType.NONE), meta
