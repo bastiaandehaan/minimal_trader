@@ -1,0 +1,130 @@
+from __future__ import annotations
+import argparse
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Dict
+
+import yaml
+import pandas as pd
+
+from strategy import Strategy, StrategyParams
+from backtest import Backtest, ExecConfig
+from data_feed import CSVFeed
+
+
+def load_config(path: str = "config.yaml") -> Dict:
+    with open(path, "r") as f:
+        return yaml.safe_load(f) or {}
+
+
+def setup_logging():
+    Path("logs").mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.FileHandler("logs/trader.log"), logging.StreamHandler()],
+    )
+    return logging.getLogger("minimal_trader")
+
+
+def run_backtest(args, cfg: Dict, logger):
+    p = cfg.get("strategy", {})
+    s_params = StrategyParams(
+        sma_period=int(p.get("sma_period", 20)),
+        atr_period=int(p.get("atr_period", 14)),
+        sl_mult=float(p.get("sl_multiplier", 1.5)),
+        tp_mult=float(p.get("tp_multiplier", 2.5)),
+        volume_threshold=float(p.get("volume_threshold", 1.0)),
+    )
+    strategy = Strategy(s_params)
+
+    e = cfg.get("trading", {})
+    b = cfg.get("backtest", {})
+    exec_cfg = ExecConfig(
+        initial_capital=float(e.get("initial_capital", 10_000.0)),
+        risk_pct=float(e.get("risk_per_trade", 1.0)),
+        commission=float(b.get("commission", 0.0002)),
+        point_value=float(e.get("point_value", 1.0)),
+        time_exit_bars=int(b.get("time_exit_bars", 200)),
+    )
+    bt = Backtest(strategy, exec_cfg)
+
+    feed = CSVFeed(args.csv)
+    df = feed.load(limit=args.limit)
+
+    logger.info(f"Loaded {len(df)} bars from {df.index[0]} to {df.index[-1]}")
+
+    results = bt.run(df, logger=logger)
+
+    print("\n" + "=" * 50)
+    print("BACKTEST RESULTS")
+    print("=" * 50)
+    for k, v in results["metrics"].items():
+        if isinstance(v, float):
+            print(f"{k:20s}: {v:,.2f}")
+        else:
+            print(f"{k:20s}: {v}")
+
+    trades = results["trades"]
+    if isinstance(trades, pd.DataFrame) and not trades.empty:
+        Path("output").mkdir(exist_ok=True)
+        out = f"output/trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        trades.to_csv(out, index=False)
+        print(f"\nTrades saved to: {out}")
+
+
+def run_signal(args, cfg: Dict, logger):
+    p = cfg.get("strategy", {})
+    s_params = StrategyParams(
+        sma_period=int(p.get("sma_period", 20)),
+        atr_period=int(p.get("atr_period", 14)),
+        sl_mult=float(p.get("sl_multiplier", 1.5)),
+        tp_mult=float(p.get("tp_multiplier", 2.5)),
+        volume_threshold=float(p.get("volume_threshold", 1.0)),
+    )
+    strategy = Strategy(s_params)
+
+    feed = CSVFeed(args.csv)
+    df = strategy.calculate_indicators(feed.load(limit=max(args.limit, 500)))  # need some history
+
+    if len(df) < max(s_params.sma_period, s_params.atr_period) + 2:
+        logger.warning("Not enough data to generate a signal.")
+        return
+
+    i = len(df) - 1
+    sig, meta = strategy.get_signal_at(df, i)
+    if sig.type.name != "NONE":
+        logger.info(f"SIGNAL: {sig.type.name} at {meta.get('timestamp')}")
+        logger.info(f"Reason: {sig.reason}")
+        logger.info(f"Price: {meta.get('close'):.2f}, SMA: {meta.get('sma'):.2f}, ATR: {meta.get('atr'):.2f}")
+    else:
+        logger.info("No signal")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Minimal Trader v2")
+    sub = parser.add_subparsers(dest="mode", required=True)
+
+    p_bt = sub.add_parser("backtest", help="Run backtest on CSV")
+    p_bt.add_argument("--csv", type=str, required=True)
+    p_bt.add_argument("--config", type=str, default="config.yaml")
+    p_bt.add_argument("--limit", type=int, default=0, help="Tail N rows (0=all)")
+
+    p_sig = sub.add_parser("signal", help="One-time signal check on CSV tail")
+    p_sig.add_argument("--csv", type=str, required=True)
+    p_sig.add_argument("--config", type=str, default="config.yaml")
+    p_sig.add_argument("--limit", type=int, default=1000)
+
+    args = parser.parse_args()
+    logger = setup_logging()
+    cfg = load_config(getattr(args, "config", "config.yaml"))
+
+    if args.mode == "backtest":
+        run_backtest(args, cfg, logger)
+    elif args.mode == "signal":
+        run_signal(args, cfg, logger)
+
+
+if __name__ == "__main__":
+    main()

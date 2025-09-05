@@ -20,3 +20,18 @@
 → Realistische data toevoegen in `data/` (bijv. GER40.cash_H1.csv)  
 → Run backtest op echte data  
 → Evalueren of logica/metrics kloppen
+
+## Step 2: Architecture Refactoring to v2 Modules
+
+**Date:** (auto)  
+**What:** Split monolith into `strategy.py`, `backtest.py`, `data_feed.py`, `main.py` + tests  
+**Why:** Separation of concerns, O(n) performance, testability
+
+**Decisions:**
+- Indicators computed once; signal per bar by index (no O(n²))
+- BUY entries only; SELL used as exit trigger
+- Time-exit fail-safe (200 bars)
+- CSVFeed for input; LiveFeed later
+
+**Status:** Implemented  
+**Next:** Run tests + run backtest on real CSV (limit first)

@@ -7,7 +7,12 @@
       "Bash(pip install:*)",
       "Bash(venv\\\\Scripts\\\\python.exe:*)",
       "Read(/C:\\Users\\basti\\PycharmProjects\\minimal_trader_setup\\minimal_trader\\venv\\Scripts/**)",
-      "Bash(venv/Scripts/python.exe:*)"
+      "Bash(venv/Scripts/python.exe:*)",
+      "Read(/C:\\Users\\basti\\PycharmProjects\\minimal_trader_setup\\minimal_trader/**)",
+      "Read(/C:\\Users\\basti\\PycharmProjects\\minimal_trader_setup\\minimal_trader/**)",
+      "Read(/C:\\Users\\basti\\PycharmProjects\\minimal_trader_setup\\minimal_trader/**)",
+      "Read(/C:\\Users\\basti\\PycharmProjects\\minimal_trader_setup\\minimal_trader/**)",
+      "Read(/C:\\Users\\basti\\PycharmProjects\\minimal_trader_setup\\minimal_trader/**)"
     ],
     "deny": [],
     "ask": []
