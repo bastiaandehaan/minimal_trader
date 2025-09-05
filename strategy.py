@@ -69,7 +69,7 @@ class Strategy:
 
         cross_above = (prev["close"] <= prev["sma"]) and (last["close"] > last["sma"])
         cross_below = (prev["close"] >= prev["sma"]) and (last["close"] < last["sma"])
-        volume_ok = bool(last.get("volume_ratio", 0) > self.p.volume_threshold)
+        volume_ok = bool(last.get("volume_ratio", 0) >= self.p.volume_threshold)
 
         meta = {
             "close": float(last["close"]),
