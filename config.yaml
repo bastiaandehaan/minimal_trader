@@ -2,24 +2,24 @@
 
 # MT5 Connection (FTMO)
 mt5:
-  login: null  # Your FTMO account number
-  password: null  # Your password
-  server: "FTMO-Demo"  # or "FTMO-Real"
+  login: null  # Vul je FTMO account in
+  password: null  # Vul je password in
+  server: "FTMO-Demo"  # of "FTMO-Real"
 
 # Data Settings
 data:
   symbol: "GER40.cash"
-  timeframe: "H1"  # M1, M5, M15, M30, H1, H4, D1
-  bars: 5000  # Historical bars to load
-  resample: null  # Optional: resample M1 to H1
+  timeframe: "H1"  # H1 is beter dan M1!
+  bars: 5000
+  resample: null  # Optioneel: "1H" als je M1 data hebt
 
 # Engine Settings
 engine:
   initial_capital: 10000.0
-  risk_per_trade: 1.0  # % of capital per trade
-  max_positions: 3  # Max positions per strategy
-  commission: 0.0002  # 2 basis points
-  slippage: 0.0001  # 1 basis point
+  risk_per_trade: 1.0  # % of capital
+  max_positions: 1  # Start met 1 per strategy
+  commission: 0.0002
+  slippage: 0.0001
   time_exit_bars: 200
 
 # Strategy Settings
@@ -32,15 +32,15 @@ strategies:
       atr_period: 14
       sl_multiplier: 1.5
       tp_multiplier: 2.5
-  
+
   breakout:
-    enabled: true
-    allocation: 50.0  # % of capital
+    enabled: false  # Eerst SMA testen!
+    allocation: 50.0
     params:
       lookback_period: 20
       atr_period: 14
       breakout_factor: 1.0
-      sl_multiplier: 1.0
+      sl_multiplier: 1.5
       tp_multiplier: 2.0
 
 # Logging
