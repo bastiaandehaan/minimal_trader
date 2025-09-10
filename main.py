@@ -12,6 +12,7 @@ import pandas as pd
 # Import strategies
 from strategies.sma_cross import SMACrossStrategy
 from strategies.breakout import BreakoutStrategy
+from strategies.rsi_reversion import RSIReversionStrategy  # NEW!
 
 # Import feeds
 from feeds.mt5_feed import MT5Feed
@@ -57,6 +58,12 @@ def create_strategies(config: dict) -> list:
         breakout_params = strat_config['breakout'].get('params', {})
         allocation = strat_config['breakout'].get('allocation', 100.0)
         strategies.append((BreakoutStrategy(breakout_params), allocation))
+
+    # RSI Reversion Strategy (NEW!)
+    if strat_config.get('rsi_reversion', {}).get('enabled', False):
+        rsi_params = strat_config['rsi_reversion'].get('params', {})
+        allocation = strat_config['rsi_reversion'].get('allocation', 100.0)
+        strategies.append((RSIReversionStrategy(rsi_params), allocation))
 
     return strategies
 
@@ -125,7 +132,9 @@ def run_backtest_on_data(df: pd.DataFrame, config: dict, logger):
             max_positions=engine_config.get('max_positions', 3),
             commission=engine_config.get('commission', 0.0002),
             slippage=engine_config.get('slippage', 0.0001),
-            time_exit_bars=engine_config.get('time_exit_bars', 200)))
+            time_exit_bars=engine_config.get('time_exit_bars', 200),
+            allow_shorts=engine_config.get('allow_shorts', True)  # NEW!
+        ))
 
     # Add strategies
     strategies = create_strategies(config)
@@ -148,10 +157,13 @@ def run_backtest_on_data(df: pd.DataFrame, config: dict, logger):
 
     metrics = results['metrics']
     print(f"Total Trades:    {metrics['total_trades']}")
+    print(f"  - Longs:       {metrics.get('total_longs', 0)}")
+    print(f"  - Shorts:      {metrics.get('total_shorts', 0)}")
     print(f"Initial Capital: ${metrics['initial_capital']:,.2f}")
     print(f"Final Capital:   ${metrics['final_capital']:,.2f}")
     print(f"Total Return:    {metrics['total_return']:.2f}%")
     print(f"Win Rate:        {metrics['win_rate']:.2f}%")
+    print(f"Profit Factor:   {metrics.get('profit_factor', 0):.2f}")
     print(f"Sharpe Ratio:    {metrics['sharpe_ratio']:.2f}")
     print(f"Max Drawdown:    {metrics['max_drawdown']:.2f}%")
 
@@ -162,10 +174,14 @@ def run_backtest_on_data(df: pd.DataFrame, config: dict, logger):
         print("-" * 40)
         for strat_name, strat_metrics in metrics['strategy_metrics'].items():
             print(f"\n{strat_name}:")
-            print(f"  Trades:    {strat_metrics['trades']}")
-            print(f"  Win Rate:  {strat_metrics['win_rate']:.2f}%")
-            print(f"  Total PnL: ${strat_metrics['total_pnl']:.2f}")
-            print(f"  Avg PnL:   ${strat_metrics['avg_pnl']:.2f}")
+            print(f"  Trades:      {strat_metrics['trades']}")
+            print(f"    - Longs:   {strat_metrics.get('longs', 0)}")
+            print(f"    - Shorts:  {strat_metrics.get('shorts', 0)}")
+            print(f"  Win Rate:    {strat_metrics['win_rate']:.2f}%")
+            print(f"  Total PnL:   ${strat_metrics['total_pnl']:.2f}")
+            print(f"  Avg PnL:     ${strat_metrics['avg_pnl']:.2f}")
+            print(f"  Best Trade:  ${strat_metrics.get('best_trade', 0):.2f}")
+            print(f"  Worst Trade: ${strat_metrics.get('worst_trade', 0):.2f}")
 
     # Save trades
     trades_df = results['trades']
@@ -174,6 +190,13 @@ def run_backtest_on_data(df: pd.DataFrame, config: dict, logger):
         output_file = f"output/trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         trades_df.to_csv(output_file, index=False)
         print(f"\nTrades saved to: {output_file}")
+
+        # Show sample trades
+        print("\n" + "-" * 40)
+        print("SAMPLE TRADES (First 5)")
+        print("-" * 40)
+        print(trades_df[['strategy', 'side', 'entry_price', 'exit_price', 'pnl',
+                         'exit_reason']].head())
 
 
 def main():

@@ -9,33 +9,49 @@ mt5:
 # Data Settings
 data:
   symbol: "GER40.cash"
-  timeframe: "H1"  # H1 is beter dan M1!
-  bars: 5000
-  resample: null  # Optioneel: "1H" als je M1 data hebt
+  timeframe: "M1"  # Voor RSI is M1 of M5 beter!
+  bars: 10000  # Meer data voor mean reversion
+  resample: "5T"  # Resample naar 5 minuten
 
 # Engine Settings
 engine:
   initial_capital: 10000.0
   risk_per_trade: 1.0  # % of capital
-  max_positions: 1  # Start met 1 per strategy
+  max_positions: 2  # Max 2 concurrent per strategy
   commission: 0.0002
   slippage: 0.0001
-  time_exit_bars: 200
+  time_exit_bars: 100  # Sneller exit voor mean reversion
+  allow_shorts: true  # BELANGRIJK: Enable shorting!
 
 # Strategy Settings
 strategies:
+  # RSI Mean Reversion - PRIMARY STRATEGY
+  rsi_reversion:
+    enabled: true
+    allocation: 60.0  # 60% of capital
+    params:
+      rsi_period: 14
+      oversold: 30.0
+      overbought: 70.0
+      atr_period: 14
+      sl_multiplier: 1.2  # Tighter stops voor mean reversion
+      tp_multiplier: 1.8  # Smaller targets
+      use_next_open: false  # Trade immediately on signal
+
+  # SMA Cross - TREND FOLLOWING
   sma_cross:
     enabled: true
-    allocation: 50.0  # % of capital
+    allocation: 40.0  # 40% of capital
     params:
-      sma_period: 20
+      sma_period: 50  # Longer for H1
       atr_period: 14
-      sl_multiplier: 1.5
-      tp_multiplier: 2.5
+      sl_multiplier: 2.0
+      tp_multiplier: 3.0
 
+  # Breakout - DISABLED FOR NOW
   breakout:
-    enabled: false  # Eerst SMA testen!
-    allocation: 50.0
+    enabled: false
+    allocation: 0.0
     params:
       lookback_period: 20
       atr_period: 14
@@ -45,5 +61,5 @@ strategies:
 
 # Logging
 logging:
-  level: "INFO"
+  level: "INFO"  # Change to DEBUG for more details
   file: "logs/trader.log"

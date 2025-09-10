@@ -1,4 +1,4 @@
-"""Multi-strategy execution engine."""
+"""Multi-strategy execution engine with LONG/SHORT support."""
 from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
@@ -41,6 +41,7 @@ class EngineConfig:
     commission: float = 0.0002  # 2 bps
     slippage: float = 0.0001  # 1 bp
     time_exit_bars: int = 200
+    allow_shorts: bool = True  # NEW: Enable/disable shorting
 
 
 class MultiStrategyEngine:
@@ -53,6 +54,8 @@ class MultiStrategyEngine:
         self.positions: List[Position] = []
         self.closed_positions: List[Position] = []
         self.equity = self.config.initial_capital
+        self.daily_start_equity = self.config.initial_capital
+        self.max_equity = self.config.initial_capital
 
     def add_strategy(self, strategy: AbstractStrategy, allocation: float = 100.0):
         """Add strategy with capital allocation percentage."""
@@ -80,6 +83,13 @@ class MultiStrategyEngine:
         if not self.strategies:
             raise ValueError("No strategies added")
 
+        # Reset state
+        self.positions = []
+        self.closed_positions = []
+        self.equity = self.config.initial_capital
+        self.daily_start_equity = self.config.initial_capital
+        self.max_equity = self.config.initial_capital
+
         # Prepare data for each strategy
         strategy_data = {}
         for name, strategy in self.strategies.items():
@@ -89,11 +99,22 @@ class MultiStrategyEngine:
 
         # Main backtest loop
         max_bars = len(data)
+        current_date = None
 
         for i in range(max_bars):
             current_bar = data.iloc[i]
 
-            # Check exits first
+            # Check for new day (reset daily drawdown)
+            bar_date = current_bar.name.date() if hasattr(current_bar.name, 'date') else None
+            if bar_date and bar_date != current_date:
+                current_date = bar_date
+                self.daily_start_equity = self.equity
+                logger.debug(f"New day {current_date}: Equity={self.equity:.2f}")
+
+            # Update max equity for drawdown calculation
+            self.max_equity = max(self.max_equity, self.equity)
+
+            # Check exits first (both LONG and SHORT)
             self._check_exits(i, current_bar)
 
             # Check for new signals from each strategy
@@ -110,11 +131,11 @@ class MultiStrategyEngine:
                 df = strategy_data[strat_name]
                 signal, meta = strategy.get_signal(df, i)
 
-                if signal.type == SignalType.BUY:
-                    # Calculate capital for this strategy
-                    strategy_capital = self.equity * (self.allocations[strat_name] / 100)
+                # Calculate capital for this strategy
+                strategy_capital = self.equity * (self.allocations[strat_name] / 100)
 
-                    # Calculate position size
+                # Handle LONG signals
+                if signal.type == SignalType.BUY:
                     size = self.calculate_position_size(
                         strategy_capital,
                         signal.entry,
@@ -138,37 +159,73 @@ class MultiStrategyEngine:
                         position.commission = position.entry_price * position.size * self.config.commission
 
                         self.positions.append(position)
-                        logger.debug(f"{strat_name} BUY at {signal.entry:.2f}, size={size}")
+                        logger.debug(f"{strat_name} LONG at {signal.entry:.2f}, size={size}")
+
+                # Handle SHORT signals (NEW!)
+                elif signal.type == SignalType.SELL and self.config.allow_shorts:
+                    size = self.calculate_position_size(
+                        strategy_capital,
+                        signal.entry,
+                        signal.stop
+                    )
+
+                    if size > 0:
+                        position = Position(
+                            strategy=strat_name,
+                            symbol=data.index.name or "SYMBOL",
+                            side='short',
+                            entry_time=current_bar.name,
+                            entry_price=signal.entry,
+                            size=size,
+                            stop_loss=signal.stop,
+                            take_profit=signal.target,
+                            entry_bar=i
+                        )
+
+                        # Apply commission
+                        position.commission = position.entry_price * position.size * self.config.commission
+
+                        self.positions.append(position)
+                        logger.debug(f"{strat_name} SHORT at {signal.entry:.2f}, size={size}")
 
         # Close any remaining positions
-        for position in self.positions:
+        for position in list(self.positions):  # Use list() to avoid modification during iteration
             self._close_position(position, data.iloc[-1]['close'], "End of data")
 
         # Generate results
         return self._generate_results()
 
     def _check_exits(self, bar_index: int, current_bar):
-        """Check and execute exits for all positions."""
+        """Check and execute exits for all positions (LONG and SHORT)."""
         positions_to_close = []
 
         for position in self.positions:
             exit_price = None
             exit_reason = None
 
-            # Check stop loss
-            if current_bar['low'] <= position.stop_loss:
-                exit_price = position.stop_loss
-                exit_reason = "Stop Loss"
+            if position.side == 'long':
+                # LONG exit logic
+                if current_bar['low'] <= position.stop_loss:
+                    exit_price = position.stop_loss
+                    exit_reason = "Stop Loss"
+                elif current_bar['high'] >= position.take_profit:
+                    exit_price = position.take_profit
+                    exit_reason = "Take Profit"
+                elif (bar_index - position.entry_bar) >= self.config.time_exit_bars:
+                    exit_price = current_bar['close']
+                    exit_reason = "Time Exit"
 
-            # Check take profit
-            elif current_bar['high'] >= position.take_profit:
-                exit_price = position.take_profit
-                exit_reason = "Take Profit"
-
-            # Check time exit
-            elif (bar_index - position.entry_bar) >= self.config.time_exit_bars:
-                exit_price = current_bar['close']
-                exit_reason = "Time Exit"
+            elif position.side == 'short':
+                # SHORT exit logic (reversed!)
+                if current_bar['high'] >= position.stop_loss:
+                    exit_price = position.stop_loss
+                    exit_reason = "Stop Loss"
+                elif current_bar['low'] <= position.take_profit:
+                    exit_price = position.take_profit
+                    exit_reason = "Take Profit"
+                elif (bar_index - position.entry_bar) >= self.config.time_exit_bars:
+                    exit_price = current_bar['close']
+                    exit_reason = "Time Exit"
 
             if exit_price:
                 position.exit_time = current_bar.name
@@ -181,12 +238,17 @@ class MultiStrategyEngine:
             self._close_position(position, position.exit_price, position.exit_reason)
 
     def _close_position(self, position: Position, exit_price: float, reason: str):
-        """Close position and calculate PnL."""
+        """Close position and calculate PnL (handles LONG and SHORT)."""
         position.exit_price = exit_price
         position.exit_reason = reason
 
-        # Calculate PnL
-        gross_pnl = (exit_price - position.entry_price) * position.size
+        # Calculate PnL based on position side
+        if position.side == 'long':
+            gross_pnl = (exit_price - position.entry_price) * position.size
+        else:  # short
+            gross_pnl = (position.entry_price - exit_price) * position.size
+
+        # Apply exit commission
         exit_commission = exit_price * position.size * self.config.commission
         position.pnl = gross_pnl - position.commission - exit_commission
 
@@ -197,7 +259,7 @@ class MultiStrategyEngine:
         self.positions.remove(position)
         self.closed_positions.append(position)
 
-        logger.debug(f"Closed {position.strategy} position: {reason} at {exit_price:.2f}, PnL={position.pnl:.2f}")
+        logger.debug(f"Closed {position.strategy} {position.side} position: {reason} at {exit_price:.2f}, PnL={position.pnl:.2f}")
 
     def _generate_results(self) -> Dict:
         """Generate backtest results and metrics."""
@@ -237,20 +299,31 @@ class MultiStrategyEngine:
             strat_trades = trades_df[trades_df['strategy'] == strat_name]
             if len(strat_trades) > 0:
                 wins = strat_trades[strat_trades['pnl'] > 0]
+                longs = strat_trades[strat_trades['side'] == 'long']
+                shorts = strat_trades[strat_trades['side'] == 'short']
+
                 strategy_metrics[strat_name] = {
                     'trades': len(strat_trades),
+                    'longs': len(longs),
+                    'shorts': len(shorts),
                     'wins': len(wins),
                     'win_rate': len(wins) / len(strat_trades) * 100,
                     'total_pnl': strat_trades['pnl'].sum(),
-                    'avg_pnl': strat_trades['pnl'].mean()
+                    'avg_pnl': strat_trades['pnl'].mean(),
+                    'best_trade': strat_trades['pnl'].max(),
+                    'worst_trade': strat_trades['pnl'].min()
                 }
 
         # Overall metrics
         total_return = ((self.equity / self.config.initial_capital) - 1) * 100
         wins = trades_df[trades_df['pnl'] > 0]
+        longs = trades_df[trades_df['side'] == 'long']
+        shorts = trades_df[trades_df['side'] == 'short']
 
         metrics = {
             'total_trades': len(trades_df),
+            'total_longs': len(longs),
+            'total_shorts': len(shorts),
             'initial_capital': self.config.initial_capital,
             'final_capital': self.equity,
             'total_return': total_return,
@@ -258,7 +331,8 @@ class MultiStrategyEngine:
             'total_pnl': trades_df['pnl'].sum(),
             'strategy_metrics': strategy_metrics,
             'sharpe_ratio': self._calculate_sharpe(trades_df),
-            'max_drawdown': self._calculate_max_drawdown(trades_df)
+            'max_drawdown': self._calculate_max_drawdown(trades_df),
+            'profit_factor': self._calculate_profit_factor(trades_df)
         }
 
         return {
@@ -291,3 +365,16 @@ class MultiStrategyEngine:
         peak = equity_curve.cummax()
         dd = (equity_curve - peak) / peak
         return abs(dd.min()) * 100 if not dd.empty else 0.0
+
+    def _calculate_profit_factor(self, trades_df: pd.DataFrame) -> float:
+        """Calculate profit factor (gross profit / gross loss)."""
+        if trades_df.empty:
+            return 0.0
+
+        wins = trades_df[trades_df['pnl'] > 0]['pnl'].sum()
+        losses = abs(trades_df[trades_df['pnl'] < 0]['pnl'].sum())
+
+        if losses == 0:
+            return float('inf') if wins > 0 else 0.0
+
+        return wins / losses
