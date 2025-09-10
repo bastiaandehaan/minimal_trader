@@ -10,8 +10,7 @@ import yaml
 import pandas as pd
 
 # Import strategies
-from strategies.sma_cross import SMACrossStrategy
-from strategies.breakout import BreakoutStrategy
+
 from strategies.rsi_reversion import RSIReversionStrategy  # NEW!
 
 # Import feeds
@@ -47,17 +46,9 @@ def create_strategies(config: dict) -> list:
     strategies = []
     strat_config = config.get('strategies', {})
 
-    # SMA Cross Strategy
-    if strat_config.get('sma_cross', {}).get('enabled', False):
-        sma_params = strat_config['sma_cross'].get('params', {})
-        allocation = strat_config['sma_cross'].get('allocation', 100.0)
-        strategies.append((SMACrossStrategy(sma_params), allocation))
 
-    # Breakout Strategy
-    if strat_config.get('breakout', {}).get('enabled', False):
-        breakout_params = strat_config['breakout'].get('params', {})
-        allocation = strat_config['breakout'].get('allocation', 100.0)
-        strategies.append((BreakoutStrategy(breakout_params), allocation))
+
+
 
     # RSI Reversion Strategy (NEW!)
     if strat_config.get('rsi_reversion', {}).get('enabled', False):
