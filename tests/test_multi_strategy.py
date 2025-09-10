@@ -9,16 +9,19 @@ from engine import MultiStrategyEngine, EngineConfig
 
 
 def make_trending_data(n=500):
-    """Create trending OHLC data."""
+    """Create trending OHLC data that will trigger SMA crossovers."""
     idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq="H")
 
-    # Trending price with some noise
-    trend = np.linspace(18000, 19000, n)
-    noise = np.random.normal(0, 20, n)
-    close = trend + noise
-
-    high = close + np.random.uniform(5, 15, n)
-    low = close - np.random.uniform(5, 15, n)
+    # Create data that starts below SMA then crosses above
+    base = 18000
+    # Start low, then trend up to create clear crossover
+    close = np.concatenate([
+        np.full(20, base - 50),  # Start well below
+        np.linspace(base - 50, base + 200, n - 20)  # Strong uptrend
+    ])
+    
+    high = close + np.random.uniform(2, 8, n)
+    low = close - np.random.uniform(2, 8, n)
     open_ = np.r_[close[0], close[:-1]]
     volume = np.random.uniform(1000, 5000, n)
 

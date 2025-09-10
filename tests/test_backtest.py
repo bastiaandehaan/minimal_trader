@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-from strategy import Strategy, StrategyParams
-from backtest import Backtest, ExecConfig
+from strategies.sma_cross import SMACrossStrategy
+from engine import MultiStrategyEngine, EngineConfig
 
 
 def synthetic(n=400, seed=123):
@@ -16,9 +16,12 @@ def synthetic(n=400, seed=123):
 
 
 def test_backtest_runs_and_produces_metrics():
-    strat = Strategy(StrategyParams(sma_period=5, atr_period=5, volume_threshold=0.5))
-    bt = Backtest(strat, ExecConfig(initial_capital=10_000, risk_pct=1.0, time_exit_bars=50))
+    strategy_params = {'sma_period': 5, 'atr_period': 5}
+    strat = SMACrossStrategy(strategy_params)
+    engine_config = EngineConfig(initial_capital=10000, risk_per_trade=1.0, time_exit_bars=50)
+    engine = MultiStrategyEngine(engine_config)
+    engine.add_strategy(strat, 100.0)
     df = synthetic(400)
-    res = bt.run(df)
+    res = engine.run_backtest(df)
     assert "metrics" in res and "trades" in res
-    assert res["metrics"]["initial_capital"] == 10_000
+    assert res["metrics"]["initial_capital"] == 10000

@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from strategy import Strategy, StrategyParams, SignalType
+from strategies.sma_cross import SMACrossStrategy
+from strategies.abstract import SignalType
 
 
 def make_df(n=200, seed=1):
@@ -15,25 +16,24 @@ def make_df(n=200, seed=1):
 
 
 def test_sma_crossover_buy_signal():
-    p = StrategyParams(sma_period=5, atr_period=5, volume_threshold=0.5)
-    strat = Strategy(p)
+    strategy_params = {'sma_period': 5, 'atr_period': 5}
+    strat = SMACrossStrategy(strategy_params)
     df = make_df(50)
     df = strat.calculate_indicators(df)
     i = len(df) - 1
-    # force bullish cross + volume
+    # force bullish cross
     df.iloc[i - 1, df.columns.get_loc("close")] = df["sma"].iloc[i - 1] - 1
     df.iloc[i, df.columns.get_loc("close")] = df["sma"].iloc[i - 1] + 2
-    df.iloc[i, df.columns.get_loc("volume")] = max(1.0, df["volume_avg"].iloc[i - 1]) * 2.0
-    sig, _ = strat.get_signal_at(df, i)
+    sig, _ = strat.get_signal(df, i)
     assert sig.type == SignalType.BUY
 
 
 def test_no_lookahead():
-    p = StrategyParams(sma_period=5, atr_period=5)
-    strat = Strategy(p)
+    strategy_params = {'sma_period': 5, 'atr_period': 5}
+    strat = SMACrossStrategy(strategy_params)
     df = make_df(60)
     df = strat.calculate_indicators(df)
     i = 30
-    sig1, _ = strat.get_signal_at(df, i)
-    sig2, _ = strat.get_signal_at(df.iloc[: i + 1], i)
+    sig1, _ = strat.get_signal(df, i)
+    sig2, _ = strat.get_signal(df.iloc[: i + 1], i)
     assert sig1.type == sig2.type
