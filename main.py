@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Main entry point for multi-strategy trading system."""
-from __future__ import annotations
 import argparse
 import logging
 import sys
@@ -10,7 +7,6 @@ import yaml
 import pandas as pd
 
 # Import strategies
-
 from strategies.rsi_reversion import RSIReversionStrategy  # NEW!
 
 # Import feeds
@@ -45,10 +41,6 @@ def create_strategies(config: dict) -> list:
     """Create strategy instances from config."""
     strategies = []
     strat_config = config.get('strategies', {})
-
-
-
-
 
     # RSI Reversion Strategy (NEW!)
     if strat_config.get('rsi_reversion', {}).get('enabled', False):
@@ -103,11 +95,20 @@ def run_backtest_csv(csv_path: str, config: dict, logger):
     feed = CSVFeed(csv_path)
 
     data_config = config.get('data', {})
-    df = feed.load(resample=data_config.get('resample'))
+    df = feed.load()  # FIXED: No resample arg; handle after load
 
     if df.empty:
         logger.error("No data loaded from CSV")
         return
+
+    # FIXED: Add resampling here, consistent with MT5Feed
+    if data_config.get('resample'):
+        df = df.resample(data_config['resample']).agg(
+            {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}).dropna()
+        logger.info(f"Resampled to {data_config['resample']}: {len(df)} bars")
+
+    # Log data info for debug
+    logger.info(f"Loaded CSV: {len(df)} bars, columns: {list(df.columns)}, index type: {type(df.index)}")
 
     # Run backtest
     run_backtest_on_data(df, config, logger)
@@ -132,6 +133,8 @@ def run_backtest_on_data(df: pd.DataFrame, config: dict, logger):
     if not strategies:
         logger.error("No strategies enabled in config")
         return
+
+    logger.info(f"Loaded strategies: {[(s.name, a) for s, a in strategies]}")  # Debug: Check if RSI loads
 
     for strategy, allocation in strategies:
         engine.add_strategy(strategy, allocation)

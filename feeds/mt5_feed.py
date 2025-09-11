@@ -1,157 +1,119 @@
-"""MetaTrader 5 data feed for FTMO and other brokers."""
+# feeds/mt5_feed.py
 from __future__ import annotations
+
 import logging
-from datetime import datetime, timedelta
+from dataclasses import dataclass
 from typing import Optional
+
 import pandas as pd
-import numpy as np
-import MetaTrader5 as mt5
 
 logger = logging.getLogger(__name__)
 
+# MetaTrader5 is optioneel; import faalt netjes als het er niet is.
+try:
+    import MetaTrader5 as mt5  # type: ignore
+except Exception:  # ImportError of init-issues
+    mt5 = None  # we laten load() hierop reageren met een duidelijke fout
+
+
+@dataclass
+class MT5Config:
+    symbol: str = "GER40.cash"
+    timeframe: str = "M1"  # "M1","M5","M15","H1",...
+    bars: int = 10_000
+    tz: str = "UTC"
+
+
+def _tf_to_mt5(tf: str):
+    """Map eenvoudige string timeframes naar MT5 constants (indien beschikbaar)."""
+    if mt5 is None:
+        return None
+    tf = tf.upper()
+    mapping = {
+        "M1": getattr(mt5, "TIMEFRAME_M1", None),
+        "M5": getattr(mt5, "TIMEFRAME_M5", None),
+        "M15": getattr(mt5, "TIMEFRAME_M15", None),
+        "M30": getattr(mt5, "TIMEFRAME_M30", None),
+        "H1": getattr(mt5, "TIMEFRAME_H1", None),
+        "H4": getattr(mt5, "TIMEFRAME_H4", None),
+        "D1": getattr(mt5, "TIMEFRAME_D1", None),
+    }
+    return mapping.get(tf)
+
 
 class MT5Feed:
-    """Real-time and historical data from MT5."""
+    """Eenvoudige MT5 feed met veilige fallbacks en duidelijk logging."""
 
-    TIMEFRAMES = {
-        'M1': mt5.TIMEFRAME_M1,
-        'M5': mt5.TIMEFRAME_M5,
-        'M15': mt5.TIMEFRAME_M15,
-        'M30': mt5.TIMEFRAME_M30,
-        'H1': mt5.TIMEFRAME_H1,
-        'H4': mt5.TIMEFRAME_H4,
-        'D1': mt5.TIMEFRAME_D1
-    }
+    def __init__(self, config: Optional[MT5Config] = None, **kwargs):
+        # zowel MT5Feed(MT5Config(...)) als MT5Feed(symbol="...", ...) ondersteunen
+        if config is None:
+            config = MT5Config(**kwargs)
+        self.cfg = config
+        self._connected = False
 
-    def __init__(self, symbol: str = "GER40.cash", timeframe: str = "H1"):
-        self.symbol = symbol
-        self.timeframe = timeframe
-        self.mt5_timeframe = self.TIMEFRAMES.get(timeframe, mt5.TIMEFRAME_H1)
-        self.connected = False
+    def connect(self) -> None:
+        if mt5 is None:
+            raise RuntimeError(
+                "MetaTrader5 module niet beschikbaar. Installeer 'MetaTrader5' "
+                "of gebruik --csv in plaats van MT5 input."
+            )
+        if self._connected:
+            return
+        if not mt5.initialize():
+            raise RuntimeError(f"MT5.initialize() faalde: {mt5.last_error()}")
+        self._connected = True
 
-    def connect(self, login: int = None, password: str = None, server: str = None) -> bool:
-        """Connect to MT5/FTMO."""
-        try:
-            if not mt5.initialize():
-                logger.error(f"MT5 initialize failed: {mt5.last_error()}")
-                return False
+        # Zorg dat symbool beschikbaar is
+        sym = self.cfg.symbol
+        if not mt5.symbol_select(sym, True):
+            raise RuntimeError(f"Kon symbool niet selecteren in MT5: {sym}")
 
-            # Login if credentials provided
-            if login and password and server:
-                authorized = mt5.login(login, password=password, server=server)
-                if not authorized:
-                    logger.error(f"Login failed: {mt5.last_error()}")
-                    mt5.shutdown()
-                    return False
+        info = mt5.symbol_info(sym)
+        spread = getattr(info, "spread", None)
+        logger.info("feeds.mt5_feed: Connected to MT5 - Symbol: %s, Spread: %s", sym, spread)
 
-            # Verify symbol exists
-            symbol_info = mt5.symbol_info(self.symbol)
-            if symbol_info is None:
-                logger.error(f"Symbol {self.symbol} not found")
-                mt5.shutdown()
-                return False
-
-            # Enable symbol for Market Watch
-            if not symbol_info.visible:
-                if not mt5.symbol_select(self.symbol, True):
-                    logger.error(f"Failed to select {self.symbol}")
-                    mt5.shutdown()
-                    return False
-
-            self.connected = True
-            logger.info(f"Connected to MT5 - Symbol: {self.symbol}, Spread: {symbol_info.spread}")
-            return True
-
-        except Exception as e:
-            logger.error(f"MT5 connection error: {e}")
-            return False
-
-    def disconnect(self):
-        """Disconnect from MT5."""
-        if self.connected:
+    def disconnect(self) -> None:
+        if mt5 is not None and self._connected:
             mt5.shutdown()
-            self.connected = False
-            logger.info("Disconnected from MT5")
+        self._connected = False
+        logger.info("feeds.mt5_feed: Disconnected from MT5")
 
-    def get_historical(self, bars: int = 1000, start_date: datetime = None) -> pd.DataFrame:
-        """Fetch historical OHLC data."""
-        if not self.connected:
-            raise RuntimeError("Not connected to MT5")
-
+    def load(self, resample: Optional[str] = None) -> pd.DataFrame:
+        """Haal bars op uit MT5 en retourneer OHLCV DataFrame in UTC index.
+        resample: optionele pandas-freq (bv '5min', '15min').
+        """
+        self.connect()
         try:
-            if start_date:
-                rates = mt5.copy_rates_from(
-                    self.symbol,
-                    self.mt5_timeframe,
-                    start_date,
-                    bars
-                )
-            else:
-                rates = mt5.copy_rates_from_pos(
-                    self.symbol,
-                    self.mt5_timeframe,
-                    0,  # from current bar
-                    bars
-                )
+            tf_const = _tf_to_mt5(self.cfg.timeframe)
+            if tf_const is None:
+                raise ValueError(f"Onbekend timeframe voor MT5: {self.cfg.timeframe}")
 
+            rates = mt5.copy_rates_from_pos(self.cfg.symbol, tf_const, 0, self.cfg.bars)
             if rates is None or len(rates) == 0:
-                logger.error(f"No data received: {mt5.last_error()}")
-                return pd.DataFrame()
+                raise RuntimeError("MT5 gaf geen data terug (rates is leeg)")
 
-            # Convert to DataFrame
             df = pd.DataFrame(rates)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
-            df.set_index('time', inplace=True)
+            # MT5 time is epoch seconds (UTC).
+            df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+            df = df.set_index("time")[["open", "high", "low", "close", "tick_volume"]].rename(
+                columns={"tick_volume": "volume"}
+            )
+            df.index = df.index.tz_convert(self.cfg.tz)
 
-            # Rename columns to standard OHLC
-            df.rename(columns={
-                'tick_volume': 'volume',
-                'real_volume': 'real_volume'
-            }, inplace=True)
+            if resample:
+                df = df.resample(resample).agg(
+                    {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+                ).dropna()
 
-            # Keep only OHLC + volume
-            df = df[['open', 'high', 'low', 'close', 'volume']]
+            if not df.index.is_monotonic_increasing:
+                df = df.sort_index()
 
-            logger.info(f"Fetched {len(df)} bars from {df.index[0]} to {df.index[-1]}")
+            logger.info(
+                "feeds.mt5_feed: Fetched %d bars from %s to %s",
+                len(df),
+                df.index[0],
+                df.index[-1],
+            )
             return df
-
-        except Exception as e:
-            logger.error(f"Error fetching historical data: {e}")
-            return pd.DataFrame()
-
-    def get_latest_tick(self) -> dict:
-        """Get latest tick data for live trading."""
-        if not self.connected:
-            raise RuntimeError("Not connected to MT5")
-
-        tick = mt5.symbol_info_tick(self.symbol)
-        if tick is None:
-            return {}
-
-        return {
-            'time': pd.to_datetime(tick.time, unit='s'),
-            'bid': tick.bid,
-            'ask': tick.ask,
-            'last': tick.last,
-            'volume': tick.volume
-        }
-
-    def get_symbol_info(self) -> dict:
-        """Get symbol specifications."""
-        if not self.connected:
-            raise RuntimeError("Not connected to MT5")
-
-        info = mt5.symbol_info(self.symbol)._asdict()
-
-        return {
-            'symbol': info['name'],
-            'digits': info['digits'],
-            'point': info['point'],
-            'tick_size': info['trade_tick_size'],
-            'tick_value': info['trade_tick_value'],
-            'min_lot': info['volume_min'],
-            'max_lot': info['volume_max'],
-            'lot_step': info['volume_step'],
-            'spread': info['spread'],
-            'stops_level': info['trade_stops_level']
-        }
+        finally:
+            self.disconnect()

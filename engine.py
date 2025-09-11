@@ -1,21 +1,46 @@
-"""Multi-strategy execution engine with LONG/SHORT support."""
+"""Multi-strategy trading engine with risk management and guard rails.
+
+Dit engine-bestand ondersteunt meerdere strategieën en dwingt diverse
+handelsregels af: NEXT_OPEN-invoer, risk-based sizing, trading-hours gate,
+volatility floor (min ATR), cooldown tussen trades, en throttles (max trades
+per bar/dag).  Het integreert de guard-functies uit utils.engine_guards.
+
+Gebruik:
+  1. Laad je OHLCV-data in een pandas DataFrame (UTC-index, kolommen
+     ['open','high','low','close','volume']).
+  2. Maak een MultiStrategyEngine-instance aan.
+  3. Voeg strategieën toe met add_strategy().
+  4. Roep run_backtest() aan met je DataFrame (en optioneel een GuardConfig).
+
+"""
 from __future__ import annotations
+
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 
 from strategies.abstract import AbstractStrategy, SignalType
+from utils.engine_guards import (
+    GuardConfig,
+    GuardState,
+    apply_trading_hours,
+    allow_entry_at_bar,
+    register_entry,
+    should_skip_low_vol,
+    in_cooldown,
+    register_exit,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class Position:
-    """Track individual position."""
+    """Track an open or closed trading position."""
     strategy: str
     symbol: str
     side: str  # 'long' or 'short'
@@ -24,7 +49,7 @@ class Position:
     size: float
     stop_loss: float
     take_profit: float
-    entry_bar: int = 0
+    entry_bar: int
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
     exit_reason: Optional[str] = None
@@ -34,350 +59,247 @@ class Position:
 
 @dataclass
 class EngineConfig:
-    """Engine configuration."""
-    initial_capital: float = 10000.0
-    risk_per_trade: float = 1.0  # % of capital
+    """Configuratie voor het engine."""
+    initial_capital: float = 10_000.0
+    risk_per_trade: float = 1.0  # % van kapitaal per trade
     max_positions: int = 3
     commission: float = 0.0002  # 2 bps
-    slippage: float = 0.0001  # 1 bp
+    slippage: float = 0.0001    # 1 bp
     time_exit_bars: int = 200
-    allow_shorts: bool = True  # NEW: Enable/disable shorting
+    allow_shorts: bool = True
 
 
 class MultiStrategyEngine:
-    """Execute multiple strategies with position management."""
+    """Voert meerdere strategieën uit met één centraal position-management."""
 
-    def __init__(self, config: EngineConfig = None):
+    def __init__(self, config: Optional[EngineConfig] = None) -> None:
         self.config = config or EngineConfig()
         self.strategies: Dict[str, AbstractStrategy] = {}
         self.allocations: Dict[str, float] = {}
         self.positions: List[Position] = []
         self.closed_positions: List[Position] = []
-        self.equity = self.config.initial_capital
-        self.daily_start_equity = self.config.initial_capital
-        self.max_equity = self.config.initial_capital
+        self.equity: float = self.config.initial_capital
+        self.daily_start_equity: float = self.config.initial_capital
+        self.max_equity: float = self.config.initial_capital
 
-    def add_strategy(self, strategy: AbstractStrategy, allocation: float = 100.0):
-        """Add strategy with capital allocation percentage."""
+    def add_strategy(self, strategy: AbstractStrategy, allocation: float = 100.0) -> None:
+        """Registreer een strategie en haar kapitaalallocatie."""
         if strategy.name in self.strategies:
-            logger.warning(f"Strategy {strategy.name} already exists")
+            logger.warning("Strategy %s already exists", strategy.name)
             return
-
         self.strategies[strategy.name] = strategy
         self.allocations[strategy.name] = allocation
-        logger.info(f"Added strategy {strategy.name} with {allocation}% allocation")
+        logger.info("Added strategy %s with %.1f%% allocation", strategy.name, allocation)
 
-    def calculate_position_size(self, capital: float, entry: float,
-                                stop: float) -> float:
-        """Calculate position size based on risk."""
-        risk_amount = capital * (self.config.risk_per_trade / 100)
+    def calculate_position_size(self, capital: float, entry: float, stop: float) -> float:
+        """Bepaal de positie-grootte op basis van risico."""
+        risk_amount = capital * (self.config.risk_per_trade / 100.0)
         risk_points = abs(entry - stop)
-
         if risk_points <= 0:
             return 0.0
+        size = risk_amount / risk_points
+        return size
 
-        # FIX: Voor GER40 - elke contract = €25 per punt
-        point_value = 25.0  # EUR per punt voor GER40
-        size = risk_amount / (risk_points * point_value)
-        return round(size, 3)  # 3 decimalen voor fractional contracts
+    def run_backtest(
+        self,
+        df: pd.DataFrame,
+        guard_cfg: Optional[GuardConfig] = None,
+    ) -> Dict[str, Dict[str, float]]:
+        """Voer de backtest uit over alle strategieën op de gegeven data."""
+        if df.empty:
+            logger.warning("Backtest aborted: no data provided")
+            return {}
 
-    def run_backtest(self, data: pd.DataFrame) -> Dict:
-        """Run all strategies on historical data."""
-        if not self.strategies:
-            raise ValueError("No strategies added")
-
-        # Reset state
-        self.positions = []
-        self.closed_positions = []
-        self.equity = self.config.initial_capital
-        self.daily_start_equity = self.config.initial_capital
-        self.max_equity = self.config.initial_capital
-
-        # Prepare data for each strategy
-        strategy_data = {}
-        for name, strategy in self.strategies.items():
-            df = strategy.calculate_indicators(data.copy())
-            strategy_data[name] = df
-            logger.info(f"Prepared data for {name}: {len(df)} bars")
-
-        # Main backtest loop
-        max_bars = len(data)
-        current_date = None
-
-        for i in range(max_bars):
-            current_bar = data.iloc[i]
-
-            # Check for new day (reset daily drawdown)
-            bar_date = current_bar.name.date() if hasattr(current_bar.name, 'date') else None
-            if bar_date and bar_date != current_date:
-                current_date = bar_date
-                self.daily_start_equity = self.equity
-                logger.debug(f"New day {current_date}: Equity={self.equity:.2f}")
-
-            # Update max equity for drawdown calculation
-            self.max_equity = max(self.max_equity, self.equity)
-
-            # Check exits first (both LONG and SHORT)
-            self._check_exits(i, current_bar)
-
-            # Check for new signals from each strategy
-            for strat_name, strategy in self.strategies.items():
-                if i < strategy.required_bars:
-                    continue
-
-                # Check if we can open more positions
-                active_positions = len([p for p in self.positions if p.strategy == strat_name])
-                if active_positions >= self.config.max_positions:
-                    continue
-
-                # Get signal
-                df = strategy_data[strat_name]
-                signal, meta = strategy.get_signal(df, i)
-
-                # Calculate capital for this strategy
-                strategy_capital = self.equity * (self.allocations[strat_name] / 100)
-
-                # Handle LONG signals
-                if signal.type == SignalType.BUY:
-                    size = self.calculate_position_size(
-                        strategy_capital,
-                        signal.entry,
-                        signal.stop
-                    )
-
-                    if size > 0:
-                        position = Position(
-                            strategy=strat_name,
-                            symbol=data.index.name or "SYMBOL",
-                            side='long',
-                            entry_time=current_bar.name,
-                            entry_price=signal.entry,
-                            size=size,
-                            stop_loss=signal.stop,
-                            take_profit=signal.target,
-                            entry_bar=i
-                        )
-
-                        # Apply commission
-                        position.commission = position.entry_price * position.size * self.config.commission
-
-                        self.positions.append(position)
-                        logger.debug(f"{strat_name} LONG at {signal.entry:.2f}, size={size}")
-
-                # Handle SHORT signals (NEW!)
-                elif signal.type == SignalType.SELL and self.config.allow_shorts:
-                    size = self.calculate_position_size(
-                        strategy_capital,
-                        signal.entry,
-                        signal.stop
-                    )
-
-                    if size > 0:
-                        position = Position(
-                            strategy=strat_name,
-                            symbol=data.index.name or "SYMBOL",
-                            side='short',
-                            entry_time=current_bar.name,
-                            entry_price=signal.entry,
-                            size=size,
-                            stop_loss=signal.stop,
-                            take_profit=signal.target,
-                            entry_bar=i
-                        )
-
-                        # Apply commission
-                        position.commission = position.entry_price * position.size * self.config.commission
-
-                        self.positions.append(position)
-                        logger.debug(f"{strat_name} SHORT at {signal.entry:.2f}, size={size}")
-
-        # Close any remaining positions
-        for position in list(self.positions):  # Use list() to avoid modification during iteration
-            self._close_position(position, data.iloc[-1]['close'], "End of data")
-
-        # Generate results
-        return self._generate_results()
-
-    def _check_exits(self, bar_index: int, current_bar):
-        """Check and execute exits for all positions (LONG and SHORT)."""
-        positions_to_close = []
-
-        for position in self.positions:
-            exit_price = None
-            exit_reason = None
-
-            if position.side == 'long':
-                # LONG exit logic
-                if current_bar['low'] <= position.stop_loss:
-                    exit_price = position.stop_loss
-                    exit_reason = "Stop Loss"
-                elif current_bar['high'] >= position.take_profit:
-                    exit_price = position.take_profit
-                    exit_reason = "Take Profit"
-                elif (bar_index - position.entry_bar) >= self.config.time_exit_bars:
-                    exit_price = current_bar['close']
-                    exit_reason = "Time Exit"
-
-            elif position.side == 'short':
-                # SHORT exit logic (reversed!)
-                if current_bar['high'] >= position.stop_loss:
-                    exit_price = position.stop_loss
-                    exit_reason = "Stop Loss"
-                elif current_bar['low'] <= position.take_profit:
-                    exit_price = position.take_profit
-                    exit_reason = "Take Profit"
-                elif (bar_index - position.entry_bar) >= self.config.time_exit_bars:
-                    exit_price = current_bar['close']
-                    exit_reason = "Time Exit"
-
-            if exit_price:
-                position.exit_time = current_bar.name
-                position.exit_price = exit_price
-                position.exit_reason = exit_reason
-                positions_to_close.append(position)
-
-        # Close positions
-        for position in positions_to_close:
-            self._close_position(position, position.exit_price, position.exit_reason)
-
-    def _close_position(self, position: Position, exit_price: float, reason: str):
-        """Close position and calculate PnL (handles LONG and SHORT)."""
-        position.exit_price = exit_price
-        position.exit_reason = reason
-
-        # Calculate PnL based on position side
-        if position.side == 'long':
-            gross_pnl = (exit_price - position.entry_price) * position.size
-        else:  # short
-            gross_pnl = (position.entry_price - exit_price) * position.size
-
-        # Apply exit commission
-        exit_commission = exit_price * position.size * self.config.commission
-        position.pnl = gross_pnl - position.commission - exit_commission
-
-        # Update equity
-        self.equity += position.pnl
-
-        # Move to closed positions
-        self.positions.remove(position)
-        self.closed_positions.append(position)
-
-        logger.debug(f"Closed {position.strategy} {position.side} position: {reason} at {exit_price:.2f}, PnL={position.pnl:.2f}")
-
-    def _generate_results(self) -> Dict:
-        """Generate backtest results and metrics."""
-        if not self.closed_positions:
-            return {
-                'metrics': {
-                    'total_trades': 0,
-                    'initial_capital': self.config.initial_capital,
-                    'final_capital': self.equity,
-                    'total_return': 0.0,
-                    'message': 'No trades executed'
-                },
-                'trades': pd.DataFrame()
-            }
-
-        # Create trades DataFrame
-        trades_data = []
-        for pos in self.closed_positions:
-            trades_data.append({
-                'strategy': pos.strategy,
-                'symbol': pos.symbol,
-                'side': pos.side,
-                'entry_time': pos.entry_time,
-                'exit_time': pos.exit_time,
-                'entry_price': pos.entry_price,
-                'exit_price': pos.exit_price,
-                'size': pos.size,
-                'pnl': pos.pnl,
-                'exit_reason': pos.exit_reason
+        # ATR berekenen als deze nog niet aanwezig is
+        if "atr" not in df.columns:
+            tr = pd.DataFrame({
+                "high_low": df["high"] - df["low"],
+                "high_close": (df["high"] - df["close"].shift().fillna(df["close"])).abs(),
+                "low_close": (df["low"] - df["close"].shift().fillna(df["close"])).abs(),
             })
+            true_range = tr.max(axis=1)
+            df["atr"] = true_range.rolling(window=14, min_periods=14).mean()
 
-        trades_df = pd.DataFrame(trades_data)
+        guard_cfg = guard_cfg or GuardConfig()
+        guard_state = GuardState()
 
-        # Calculate metrics per strategy
-        strategy_metrics = {}
-        for strat_name in self.strategies.keys():
-            strat_trades = trades_df[trades_df['strategy'] == strat_name]
-            if len(strat_trades) > 0:
-                wins = strat_trades[strat_trades['pnl'] > 0]
-                longs = strat_trades[strat_trades['side'] == 'long']
-                shorts = strat_trades[strat_trades['side'] == 'short']
+        # Alleen handelen binnen de trading hours (08:00–22:00 Europe/Brussels)
+        df = apply_trading_hours(df, guard_cfg)
+        logger.info("engine: NEXT_OPEN enforced for entries")
 
-                strategy_metrics[strat_name] = {
-                    'trades': len(strat_trades),
-                    'longs': len(longs),
-                    'shorts': len(shorts),
-                    'wins': len(wins),
-                    'win_rate': len(wins) / len(strat_trades) * 100,
-                    'total_pnl': strat_trades['pnl'].sum(),
-                    'avg_pnl': strat_trades['pnl'].mean(),
-                    'best_trade': strat_trades['pnl'].max(),
-                    'worst_trade': strat_trades['pnl'].min()
-                }
+        # Reset interne staat
+        self.positions.clear()
+        self.closed_positions.clear()
+        self.equity = self.config.initial_capital
 
-        # Overall metrics
-        total_return = ((self.equity / self.config.initial_capital) - 1) * 100
-        wins = trades_df[trades_df['pnl'] > 0]
-        longs = trades_df[trades_df['side'] == 'long']
-        shorts = trades_df[trades_df['side'] == 'short']
+        # Loop over elke bar
+        for bar_i, (ts, row) in enumerate(df.iterrows()):
+            # Eerst exits checken
+            for pos in self.positions[:]:
+                # Time exit
+                if bar_i - pos.entry_bar >= self.config.time_exit_bars:
+                    pos.exit_time = ts
+                    pos.exit_price = row["open"]  # volgende bar open (benadering)
+                    pos.exit_reason = "Time Exit"
+                    pos.pnl = (pos.exit_price - pos.entry_price) * pos.size * (1 if pos.side == "long" else -1)
+                    pos.pnl -= (pos.entry_price + pos.exit_price) * self.config.commission * pos.size
+                    self.closed_positions.append(pos)
+                    register_exit(pos.strategy, bar_i, guard_state)
+                    self.positions.remove(pos)
+                    self.equity += pos.pnl
+                    continue
+                # Stop loss / Take profit
+                if pos.side == "long":
+                    if row["low"] <= pos.stop_loss or row["high"] >= pos.take_profit:
+                        pos.exit_time = ts
+                        price = pos.stop_loss if row["low"] <= pos.stop_loss else pos.take_profit
+                        pos.exit_price = price
+                        pos.exit_reason = "Stop Loss" if row["low"] <= pos.stop_loss else "Take Profit"
+                        pos.pnl = (pos.exit_price - pos.entry_price) * pos.size
+                        pos.pnl -= (pos.entry_price + pos.exit_price) * self.config.commission * pos.size
+                        self.closed_positions.append(pos)
+                        register_exit(pos.strategy, bar_i, guard_state)
+                        self.positions.remove(pos)
+                        self.equity += pos.pnl
+                else:  # short
+                    if row["high"] >= pos.stop_loss or row["low"] <= pos.take_profit:
+                        pos.exit_time = ts
+                        price = pos.stop_loss if row["high"] >= pos.stop_loss else pos.take_profit
+                        pos.exit_price = price
+                        pos.exit_reason = "Stop Loss" if row["high"] >= pos.stop_loss else "Take Profit"
+                        pos.pnl = (pos.entry_price - pos.exit_price) * pos.size
+                        pos.pnl -= (pos.entry_price + pos.exit_price) * self.config.commission * pos.size
+                        self.closed_positions.append(pos)
+                        register_exit(pos.strategy, bar_i, guard_state)
+                        self.positions.remove(pos)
+                        self.equity += pos.pnl
+
+            # Nieuwe entries evalueren
+            for strategy_name, strategy in self.strategies.items():
+                if len(self.positions) >= self.config.max_positions:
+                    break
+
+                # Guard: te lage ATR?
+                atr_val = row["atr"]
+                if should_skip_low_vol(atr_val, guard_cfg):
+                    continue
+
+                # Guard: cooldown per strategie
+                if in_cooldown(strategy_name, bar_i, guard_cfg, guard_state):
+                    continue
+
+                # Guard: één trade per tijdstap en max trades per dag
+                # Hier is guard_state toegevoegd als derde argument.
+                if not allow_entry_at_bar(ts, guard_cfg, guard_state):
+                    continue
+
+                # Strategie-signaal ophalen
+                try:
+                    signal = strategy.generate_signal(row)
+                except Exception as exc:
+                    logger.error("Strategy %s failed to generate signal: %s", strategy_name, exc)
+                    continue
+
+                if signal is None or signal.type == SignalType.NONE:
+                    continue
+
+                # NEXT_OPEN: voer pas in op volgende bar
+                if bar_i + 1 >= len(df.index):
+                    continue
+                next_open_ts = df.index[bar_i + 1]
+                next_open_price = df.iloc[bar_i + 1]["open"]
+
+                # Stop-loss / take-profit bepalen op basis van ATR-multipliers
+                sl_mult = getattr(signal, "sl_multiplier", 2.0)
+                tp_mult = getattr(signal, "tp_multiplier", 3.0)
+                if signal.side == "long":
+                    stop = next_open_price - sl_mult * atr_val
+                    target = next_open_price + tp_mult * atr_val
+                else:
+                    stop = next_open_price + sl_mult * atr_val
+                    target = next_open_price - tp_mult * atr_val
+
+                # Risico-gebaseerde sizing
+                size = self.calculate_position_size(self.equity, next_open_price, stop)
+                if size <= 0:
+                    continue
+
+                # Positie aanmaken
+                pos = Position(
+                    strategy=strategy_name,
+                    symbol=strategy.symbol,
+                    side="long" if signal.side == "long" else "short",
+                    entry_time=next_open_ts.to_pydatetime(),
+                    entry_price=next_open_price,
+                    size=size,
+                    stop_loss=stop,
+                    take_profit=target,
+                    entry_bar=bar_i + 1,
+                )
+                self.positions.append(pos)
+                register_entry(next_open_ts, guard_cfg, guard_state)
+
+        # Overgebleven posities sluiten op de laatste close
+        for pos in self.positions:
+            last_row = df.iloc[-1]
+            pos.exit_time = df.index[-1].to_pydatetime()
+            pos.exit_price = last_row["close"]
+            pos.exit_reason = "Final"
+            pos.pnl = (pos.exit_price - pos.entry_price) * pos.size * (1 if pos.side == "long" else -1)
+            pos.pnl -= (pos.entry_price + pos.exit_price) * self.config.commission * pos.size
+            self.closed_positions.append(pos)
+            self.equity += pos.pnl
+
+        # Metrics opbouwen
+        total_trades = len(self.closed_positions)
+        longs = sum(1 for p in self.closed_positions if p.side == "long")
+        shorts = total_trades - longs
+        wins = sum(1 for p in self.closed_positions if p.pnl > 0)
+        gross_win = sum(p.pnl for p in self.closed_positions if p.pnl > 0)
+        gross_loss = -sum(p.pnl for p in self.closed_positions if p.pnl < 0)
+        profit_factor = gross_win / gross_loss if gross_loss > 0 else float("inf")
+        win_rate = wins / total_trades * 100.0 if total_trades > 0 else 0.0
+
+        # Sharpe: simpele variant op basis van cumulatieve returns
+        returns = []
+        for p in self.closed_positions:
+            returns.append(p.pnl / self.config.initial_capital)
+        if returns and np.std(returns) > 0:
+            sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(252)
+        else:
+            sharpe = 0.0
+
+        # Max Drawdown
+        equity_curve = np.cumsum([p.pnl for p in self.closed_positions]) + self.config.initial_capital
+        if len(equity_curve) > 0:
+            cummax = np.maximum.accumulate(equity_curve)
+            drawdowns = (equity_curve - cummax) / cummax
+            max_dd = -np.min(drawdowns) * 100.0
+        else:
+            max_dd = 0.0
 
         metrics = {
-            'total_trades': len(trades_df),
-            'total_longs': len(longs),
-            'total_shorts': len(shorts),
-            'initial_capital': self.config.initial_capital,
-            'final_capital': self.equity,
-            'total_return': total_return,
-            'win_rate': len(wins) / len(trades_df) * 100 if len(trades_df) > 0 else 0,
-            'total_pnl': trades_df['pnl'].sum(),
-            'strategy_metrics': strategy_metrics,
-            'sharpe_ratio': self._calculate_sharpe(trades_df),
-            'max_drawdown': self._calculate_max_drawdown(trades_df),
-            'profit_factor': self._calculate_profit_factor(trades_df)
+            "total_trades": total_trades,
+            "total_longs": longs,
+            "total_shorts": shorts,
+            "total_return": (self.equity - self.config.initial_capital) / self.config.initial_capital * 100.0,
+            "win_rate": win_rate,
+            "profit_factor": profit_factor,
+            "sharpe_ratio": sharpe,
+            "max_drawdown": max_dd,
+            "final_capital": self.equity,
         }
+
+        logger.info(
+            "Backtest complete: trades=%d, return=%.2f%%, win_rate=%.2f%%, PF=%.2f, DD=%.2f%%",
+            total_trades,
+            metrics["total_return"],
+            win_rate,
+            profit_factor,
+            max_dd,
+        )
 
         return {
-            'metrics': metrics,
-            'trades': trades_df
+            "metrics": metrics,
+            "positions": [p.__dict__ for p in self.closed_positions],
         }
-
-    def _calculate_sharpe(self, trades_df: pd.DataFrame) -> float:
-        """Calculate Sharpe ratio."""
-        if len(trades_df) < 2:
-            return 0.0
-
-        returns = trades_df['pnl'] / self.config.initial_capital * 100
-        if returns.std() == 0:
-            return 0.0
-
-        # Annualize (rough estimate)
-        days = (trades_df['exit_time'].max() - trades_df['entry_time'].min()).days
-        if days > 0:
-            trades_per_year = (252 / days) * len(trades_df)
-            return (returns.mean() / returns.std()) * np.sqrt(trades_per_year)
-        return 0.0
-
-    def _calculate_max_drawdown(self, trades_df: pd.DataFrame) -> float:
-        """Calculate maximum drawdown percentage."""
-        if trades_df.empty:
-            return 0.0
-
-        equity_curve = self.config.initial_capital + trades_df['pnl'].cumsum()
-        peak = equity_curve.cummax()
-        dd = (equity_curve - peak) / peak
-        return abs(dd.min()) * 100 if not dd.empty else 0.0
-
-    def _calculate_profit_factor(self, trades_df: pd.DataFrame) -> float:
-        """Calculate profit factor (gross profit / gross loss)."""
-        if trades_df.empty:
-            return 0.0
-
-        wins = trades_df[trades_df['pnl'] > 0]['pnl'].sum()
-        losses = abs(trades_df[trades_df['pnl'] < 0]['pnl'].sum())
-
-        if losses == 0:
-            return float('inf') if wins > 0 else 0.0
-
-        return wins / losses
