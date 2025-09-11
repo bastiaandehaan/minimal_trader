@@ -55,3 +55,7 @@ data/
 *.hst
 *.dat
 *.log
+# Allow samples under data/
+!data/
+!data/samples/
+!data/samples/**
