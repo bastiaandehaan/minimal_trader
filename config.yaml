@@ -1,27 +1,58 @@
+# config.yaml - Optimized RSI Mean Reversion Configuration
+# Place this in your project root or output/ folder
+
+# Data settings
 data:
   symbol: GER40.cash
-  resample: 5min  # Gebruik 'min' i.p.v. 'T' voor pandas >= 2.2.0
-  bars: 5000
+  resample: 5min        # Resample to 5-minute bars (reduces noise)
+  bars: 5000            # Number of bars to load from MT5
+  
+# MT5 connection (optional for CSV backtests)
+mt5:
+  login: your_account_number
+  password: "your_password"
+  server: "FTMO-Demo"
+
+# Engine settings
+engine:
+  initial_capital: 10000.0
+  risk_per_trade: 0.5         # Conservative: 0.5% risk per trade
+  max_positions: 3            # Allow multiple positions
+  commission: 0.0002          # 2 basis points per leg
+  slippage: 0.0001            # 1 basis point slippage
+  time_exit_bars: 100         # Exit after 100 bars (8+ hours on 5min)
+  allow_shorts: true          # Enable short trades
+
+# Strategy settings
 strategies:
   rsi_reversion:
     enabled: true
-    allocation: 100.0
+    allocation: 100.0         # Use 100% of capital
     params:
-      rsi_period: 14
-      oversold: 30.0
-      overbought: 70.0
-      atr_period: 14
-      sl_multiplier: 1.5
-      tp_multiplier: 2.0
-      use_next_open: true
-engine:
-  initial_capital: 10000
-  risk_per_trade: 1.0
-  max_positions: 3
-  commission: 0.0002
-  slippage: 0.0001
-  time_exit_bars: 200
-  allow_shorts: true
+      # RSI parameters
+      rsi_period: 14          # Standard RSI period
+      oversold: 35.0          # Less extreme (was 30)
+      overbought: 65.0        # Less extreme (was 70)
+      
+      # ATR-based risk management
+      atr_period: 14          # ATR period for volatility
+      sl_multiplier: 2.0      # Stop loss = 2x ATR
+      tp_multiplier: 1.5      # Take profit = 1.5x ATR (favorable R:R)
+      
+      # Entry method
+      use_next_open: false    # Use current bar close for entry
+
+# Logging settings
 logging:
-  level: DEBUG
+  level: INFO                 # Use DEBUG for more details
   file: logs/trader.log
+
+# Trading hours filter (optional)
+guards:
+  trading_hours_tz: "Europe/Berlin"
+  trading_hours_start: "08:00"
+  trading_hours_end: "22:00"
+  min_atr_pts: 10.0           # Minimum ATR in points
+  cooldown_bars: 3            # Bars to wait after exit
+  max_trades_per_day: 10      # Maximum trades per day
+  one_trade_per_timestamp: true

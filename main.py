@@ -12,121 +12,188 @@ import yaml
 from engine import MultiStrategyEngine, EngineConfig
 from strategies.rsi_reversion import RSIReversionStrategy
 from feeds.csv_feed import CSVFeed
-from feeds.mt5_feed import MT5Feed, MT5Config
+from utils.engine_guards import GuardConfig
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+# logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger("main")
+logger.setLevel(logging.INFO)
 
 
-def load_config(path: Optional[str]) -> Dict:
+# ----------------- helpers -----------------
+
+def _load_config(path: Optional[str]) -> Dict:
     if not path:
         return {}
     p = Path(path)
-    with p.open("r", encoding="utf-8") as f:
+    if not p.exists():
+        raise FileNotFoundError(p)
+    with p.open("r") as f:
         return yaml.safe_load(f) or {}
 
 
 def _build_engine_from_config(cfg: Dict) -> MultiStrategyEngine:
-    e = cfg.get("engine") or {}
-    engine = MultiStrategyEngine(
-        EngineConfig(
-            initial_capital=float(e.get("initial_capital", 10_000)),
-            risk_per_trade=float(e.get("risk_per_trade", 1.0)),
-            max_positions=int(e.get("max_positions", 3)),
-            commission=float(e.get("commission", 0.0002)),
-            slippage=float(e.get("slippage", 0.0001)),
-            time_exit_bars=int(e.get("time_exit_bars", 200)),
-            allow_shorts=bool(e.get("allow_shorts", True)),
-        )
+    ecfg = cfg.get("engine") or {}
+    eng = MultiStrategyEngine(EngineConfig(
+        initial_capital=float(ecfg.get("initial_capital", 10_000.0)),
+        risk_per_trade=float(ecfg.get("risk_per_trade", 1.0)),
+        max_positions=int(ecfg.get("max_positions", 3)),
+        commission=float(ecfg.get("commission", 0.0002)),
+        slippage=float(ecfg.get("slippage", 0.0)),
+        time_exit_bars=int(ecfg.get("time_exit_bars", 200)),
+        allow_shorts=bool(ecfg.get("allow_shorts", True)),
+        min_risk_pts=float(ecfg.get("min_risk_pts", 0.5)),
+    ))
+    return eng
+
+
+def _build_strategy_from_config(cfg: Dict) -> RSIReversionStrategy:
+    scfg = ((cfg.get("strategies") or {}).get("rsi_reversion") or {})
+    params = scfg.get("params") or {}
+    strat = RSIReversionStrategy(params)
+    allocation = float(scfg.get("allocation", 100.0))
+    return strat, allocation
+
+
+def _build_guards_from_config(cfg: Dict) -> GuardConfig:
+    g = cfg.get("guards") or {}
+    return GuardConfig(
+        trading_hours_tz=g.get("trading_hours_tz", "Europe/Brussels"),
+        trading_hours_start=g.get("trading_hours_start", "08:00"),
+        trading_hours_end=g.get("trading_hours_end", "22:00"),
+        min_atr_pts=float(g.get("min_atr_pts", 20.0)),
+        cooldown_bars=int(g.get("cooldown_bars", 3)),
+        max_trades_per_day=int(g.get("max_trades_per_day", 10)),
+        one_trade_per_timestamp=bool(g.get("one_trade_per_timestamp", True)),
     )
-    s = (cfg.get("strategies") or {}).get("rsi_reversion", {})
-    if s.get("enabled", True):
-        engine.add_strategy(RSIReversionStrategy(s.get("params", {})), float(s.get("allocation", 100.0)))
-    return engine
 
 
-def run_backtest_csv(csv_path: str, cfg: Dict) -> None:
+def _print_results(results: Dict):
+    m = results["metrics"]
+    print("\n============================================================")
+    print("BACKTEST RESULTS")
+    print("============================================================")
+    print(f"Total Trades:    {m['total_trades']}")
+    print(f"  - Longs:       {m['total_longs']}")
+    print(f"  - Shorts:      {m['total_shorts']}")
+    print(f"Initial Capital: ${m['initial_capital']:.2f}")
+    print(f"Final Capital:   ${m['final_capital']:.2f}")
+    print(f"Total Return:    {m['total_return']:.2f}%")
+    print(f"Win Rate:        {m['win_rate']:.2f}%")
+    pf = "inf" if m["profit_factor"] == float("inf") else f"{m['profit_factor']:.2f}"
+    print(f"Profit Factor:   {pf}")
+    print(f"Sharpe Ratio:    {m['sharpe_ratio']:.2f}")
+    print(f"Max Drawdown:    {m['max_drawdown']:.2f}%")
+
+    trades = results["positions"]
+    if not trades.empty:
+        by_strat = trades.groupby("strategy")["pnl"].agg(["count", "sum"]).reset_index()
+        print("\n----------------------------------------")
+        print("STRATEGY BREAKDOWN")
+        print("----------------------------------------\n")
+        for _, r in by_strat.iterrows():
+            print(f"{r['strategy']}: Trades={int(r['count'])}, Total PnL=${r['sum']:.2f}")
+
+        print("\nTrades saved to: output/trades.csv")
+
+
+def run_backtest_csv(csv_path: str, cfg: Dict):
     data_cfg = cfg.get("data") or {}
-    resample = data_cfg.get("resample")  # e.g. "5min" / "5T"
-    feed = CSVFeed(csv_path, resample=resample)
-    df = feed.load()
+    resample = data_cfg.get("resample", "5min")
 
+    feed = CSVFeed(csv_path)
+    df = feed.load(resample=resample)
     logger.info("feeds.csv_feed: Loaded %d bars from %s", len(df), Path(csv_path).name)
 
     engine = _build_engine_from_config(cfg)
-    logger.info("main: Running backtest on %d bars from %s to %s", len(df), df.index.min(), df.index.max())
-    results = engine.run_backtest(df)
+    strat, alloc = _build_strategy_from_config(cfg)
+    engine.add_strategy(strat, alloc)
+
+    guard_cfg = _build_guards_from_config(cfg)
+    logger.info("main: Running backtest on %d bars from %s to %s", len(df), df.index[0], df.index[-1])
+    results = engine.run_backtest(df, guard_cfg)
+
+    out_dir = Path("output")
+    out_dir.mkdir(exist_ok=True)
+    results["positions"].to_csv(out_dir / "trades.csv", index=False)
+
     _print_results(results)
 
 
-def run_backtest_mt5(cfg: Dict) -> None:  # pragma: no cover
-    data_cfg = cfg.get("data") or {}
-    mt5_cfg = cfg.get("mt5") or {}
-    resample = data_cfg.get("resample")
+def run_backtest_mt5(cfg: Dict):
+    # Lazy import om corrupte/afwezige MT5 installatie niet te laten crashen als je CSV gebruikt
+    try:
+        from feeds.mt5_feed import MT5Feed
+    except Exception:
+        logger.error("MT5 feed not available")
+        return
 
-    feed = MT5Feed(MT5Config(symbol=mt5_cfg.get("symbol", "GER40.cash"),
-                             timeframe=mt5_cfg.get("timeframe", "M1"),
-                             bars=int(mt5_cfg.get("bars", 10_000))))
-    feed.connect()
-    df = feed.load(resample=resample)
-    logger.info("feeds.mt5_feed: Loaded %d bars from MT5 %s", len(df), feed.cfg.symbol)
+    mt5_cfg = (cfg.get("mt5") or {})
+    symbol = mt5_cfg.get("symbol", "GER40.cash")
+    timeframe = mt5_cfg.get("timeframe", "M1")
+    bars = int(mt5_cfg.get("bars", 10_000))
 
-    engine = _build_engine_from_config(cfg)
-    logger.info("main: Running backtest on %d bars from %s to %s", len(df), df.index.min(), df.index.max())
-    results = engine.run_backtest(df)
-    _print_results(results)
+    feed = MT5Feed(symbol=symbol, timeframe=timeframe, bars=bars)
+    if not feed.connect(
+        login=mt5_cfg.get("login"),
+        password=mt5_cfg.get("password"),
+        server=mt5_cfg.get("server"),
+    ):
+        logger.error("Failed to connect MT5")
+        return
+    df = feed.fetch()
     feed.disconnect()
 
+    # resample indien in config
+    data_cfg = cfg.get("data") or {}
+    resample = data_cfg.get("resample")
+    if resample:
+        df = df.resample(resample).agg({
+            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+        }).dropna()
 
-def _print_results(results: Dict) -> None:
-    m = results.get("metrics", {})
-    print("\n" + "=" * 60)
-    print("BACKTEST RESULTS")
-    print("=" * 60)
-    print(f"Total Trades:    {m.get('total_trades', 0)}")
-    print(f"  - Longs:       {m.get('total_longs', 0)}")
-    print(f"  - Shorts:      {m.get('total_shorts', 0)}")
-    print(f"Initial Capital: ${m.get('initial_capital', 0.0):.2f}")
-    print(f"Final Capital:   ${m.get('final_capital', 0.0):.2f}")
-    print(f"Total Return:    {m.get('total_return', 0.0):.2f}%")
-    print(f"Win Rate:        {m.get('win_rate', 0.0):.2f}%")
-    pf = m.get("profit_factor", 0.0)
-    print(f"Profit Factor:   {'inf' if pd.isna(pf) or pd.isinf(pf) else f'{pf:.2f}'}")
-    print(f"Sharpe Ratio:    {m.get('sharpe_ratio', 0.0):.2f}")
-    print(f"Max Drawdown:    {m.get('max_drawdown', 0.0):.2f}%")
+    engine = _build_engine_from_config(cfg)
+    strat, alloc = _build_strategy_from_config(cfg)
+    engine.add_strategy(strat, alloc)
 
-    print("\n----------------------------------------")
-    print("STRATEGY BREAKDOWN")
-    print("----------------------------------------")
-    for name, sm in (results.get("strategies") or {}).items():
-        print(f"\n{name}:")
-        print(f"  Trades:      {sm.get('trades', 0)}")
-        print(f"    - Longs:   {sm.get('longs', 0)}")
-        print(f"    - Shorts:  {sm.get('shorts', 0)}")
-        print(f"  Win Rate:    {sm.get('win_rate', 0.0):.2f}%")
-        print(f"  Total PnL:   ${sm.get('total_pnl', 0.0):.2f}")
-        print(f"  Avg PnL:     ${sm.get('avg_pnl', 0.0):.2f}")
-        print(f"  Best Trade:  ${sm.get('best_trade', 0.0):.2f}")
-        print(f"  Worst Trade: ${sm.get('worst_trade', 0.0):.2f}")
+    guard_cfg = _build_guards_from_config(cfg)
+    logger.info("main: Running backtest with MT5 data")
+    results = engine.run_backtest(df, guard_cfg)
+
+    out_dir = Path("output"); out_dir.mkdir(exist_ok=True)
+    results["positions"].to_csv(out_dir / "trades.csv", index=False)
+    _print_results(results)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest="cmd", required=True)
+# ----------------- CLI -----------------
 
-    bt = sub.add_parser("backtest", help="run backtest")
-    bt.add_argument("--csv", type=str, help="Path to CSV")
-    bt.add_argument("--config", type=str, help="YAML config", default=None)
+def build_arg_parser():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers(dest="cmd", required=True)
 
-    args = ap.parse_args()
-    cfg = load_config(args.config)
+    b = sub.add_parser("backtest")
+    b.add_argument("--csv", type=str, help="CSV file with OHLCV")
+    b.add_argument("--config", type=str, help="YAML config file")
+    b.add_argument("--mt5", action="store_true", help="Use MT5 instead of CSV")
 
-    if args.csv:
-        logger.info("main: Running backtest on CSV: %s", args.csv)
-        run_backtest_csv(args.csv, cfg)
-    else:
-        logger.info("main: Running backtest with MT5 data")
-        run_backtest_mt5(cfg)
+    return p
+
+
+def main():
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    cfg = _load_config(args.config)
+
+    if args.cmd == "backtest":
+        if args.mt5 and not args.csv:
+            run_backtest_mt5(cfg)
+        elif args.csv:
+            run_backtest_csv(args.csv, cfg)
+        else:
+            parser.error("Provide --csv or --mt5")
 
 
 if __name__ == "__main__":
