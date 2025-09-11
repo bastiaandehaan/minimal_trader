@@ -11,7 +11,7 @@ data:
   symbol: "GER40.cash"
   timeframe: "M1"  # Voor RSI is M1 of M5 beter!
   bars: 10000  # Meer data voor mean reversion
-  resample: "5T"  # Resample naar 5 minuten
+  resample: "5min"  # Resample naar 5 minuten
 
 # Engine Settings
 engine:
@@ -28,7 +28,7 @@ strategies:
   # RSI Mean Reversion - PRIMARY STRATEGY
   rsi_reversion:
     enabled: true
-    allocation: 60.0  # 60% of capital
+    allocation: 100.0  # 100% of capital (only active strategy)
     params:
       rsi_period: 14
       oversold: 30.0
@@ -37,27 +37,6 @@ strategies:
       sl_multiplier: 1.2  # Tighter stops voor mean reversion
       tp_multiplier: 1.8  # Smaller targets
       use_next_open: false  # Trade immediately on signal
-
-  # SMA Cross - TREND FOLLOWING
-  sma_cross:
-    enabled: true
-    allocation: 40.0  # 40% of capital
-    params:
-      sma_period: 50  # Longer for H1
-      atr_period: 14
-      sl_multiplier: 2.0
-      tp_multiplier: 3.0
-
-  # Breakout - DISABLED FOR NOW
-  breakout:
-    enabled: false
-    allocation: 0.0
-    params:
-      lookback_period: 20
-      atr_period: 14
-      breakout_factor: 1.0
-      sl_multiplier: 1.5
-      tp_multiplier: 2.0
 
 # Logging
 logging:

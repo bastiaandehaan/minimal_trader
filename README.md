@@ -11,8 +11,7 @@ minimal_trader/
 ├── config.yaml            # Trading configuration
 ├── strategies/            # Trading strategies
 │   ├── abstract.py        # Base strategy interface
-│   ├── sma_cross.py       # SMA crossover strategy
-│   └── breakout.py        # Breakout strategy
+│   └── rsi_reversion.py   # RSI mean reversion strategy
 ├── feeds/                 # Data sources
 │   ├── csv_feed.py        # CSV data loader
 │   └── mt5_feed.py        # MetaTrader 5 integration
@@ -44,12 +43,16 @@ pip install -r requirements.txt
    
    # Strategy Settings
    strategies:
-     sma_cross:
+     rsi_reversion:
        enabled: true
        allocation: 100.0  # % of capital
        params:
-         sma_period: 20
+         rsi_period: 14
+         oversold: 30.0
+         overbought: 70.0
          atr_period: 14
+         sl_multiplier: 1.2
+         tp_multiplier: 1.8
    ```
 
 ### Basic Usage
@@ -75,20 +78,16 @@ python main.py live
 
 ## 🧠 Strategies
 
-### SMA Cross Strategy
-**Logic**: Buy when price crosses above SMA, sell when crosses below  
+### RSI Reversion Strategy
+**Logic**: Mean reversion based on RSI - Buy when RSI crosses up from oversold, sell when crosses down from overbought  
 **Parameters**:
-- `sma_period`: Moving average period (default: 20)
+- `rsi_period`: RSI calculation period (default: 14)
+- `oversold`: Oversold threshold (default: 30.0)
+- `overbought`: Overbought threshold (default: 70.0)
 - `atr_period`: ATR period for stop/target (default: 14)
-- `sl_multiplier`: Stop loss ATR multiplier (default: 1.5)
-- `tp_multiplier`: Take profit ATR multiplier (default: 2.5)
-
-### Breakout Strategy  
-**Logic**: Buy/sell on price breakouts from recent high/low ranges  
-**Parameters**:
-- `lookback_period`: Range calculation period (default: 20)
-- `breakout_factor`: Breakout threshold multiplier (default: 1.0)
-- `atr_period`: ATR period for stop/target (default: 14)
+- `sl_multiplier`: Stop loss ATR multiplier (default: 1.2)
+- `tp_multiplier`: Take profit ATR multiplier (default: 1.8)
+- `use_next_open`: Entry on next bar open vs current close (default: true)
 
 ## 🔧 Advanced Usage
 
@@ -100,15 +99,19 @@ timestamp,open,high,low,close,volume
 2024-01-01 00:00:00,1.1000,1.1020,1.0980,1.1010,1500
 ```
 
-### Multi-Strategy Configuration
+### Strategy Configuration
 ```yaml
 strategies:
-  sma_cross:
+  rsi_reversion:
     enabled: true
-    allocation: 60.0    # 60% of capital
-  breakout:
-    enabled: true  
-    allocation: 40.0    # 40% of capital
+    allocation: 100.0   # 100% of capital
+    params:
+      rsi_period: 14
+      oversold: 30.0
+      overbought: 70.0
+      atr_period: 14
+      sl_multiplier: 1.2
+      tp_multiplier: 1.8
 ```
 
 ### Risk Management
@@ -144,7 +147,9 @@ python -m pytest tests/ --cov=. --cov-report=html
 1. **Inherit from `AbstractStrategy`:**
 ```python
 from strategies.abstract import AbstractStrategy, Signal, SignalType
+from typing import Tuple, Dict
 import pandas as pd
+import numpy as np
 
 class MyStrategy(AbstractStrategy):
     @property
@@ -173,6 +178,13 @@ class MyStrategy(AbstractStrategy):
                 stop=df.iloc[i]['close'] * 0.98,
                 target=df.iloc[i]['close'] * 1.05
             ), {}
+        elif df.iloc[i]['close'] < df.iloc[i]['my_indicator']:
+            return Signal(
+                type=SignalType.SELL,  # Short signal
+                entry=df.iloc[i]['close'],
+                stop=df.iloc[i]['close'] * 1.02,
+                target=df.iloc[i]['close'] * 0.95
+            ), {}
             
         return Signal(SignalType.NONE), {}
 ```
@@ -182,7 +194,7 @@ class MyStrategy(AbstractStrategy):
 strategies:
   my_strategy:
     enabled: true
-    allocation: 50.0
+    allocation: 100.0
     params:
       period: 20
 ```
@@ -193,10 +205,12 @@ from strategies.my_strategy import MyStrategy
 
 def create_strategies(config: dict) -> list:
     strategies = []
+    strat_config = config.get('strategies', {})
     
-    if config.get('strategies', {}).get('my_strategy', {}).get('enabled'):
-        params = config['strategies']['my_strategy'].get('params', {})
-        allocation = config['strategies']['my_strategy'].get('allocation', 100.0)
+    # Add your new strategy
+    if strat_config.get('my_strategy', {}).get('enabled', False):
+        params = strat_config['my_strategy'].get('params', {})
+        allocation = strat_config['my_strategy'].get('allocation', 100.0)
         strategies.append((MyStrategy(params), allocation))
         
     return strategies
@@ -218,8 +232,8 @@ class MyDataFeed(DataFeed):
 
 ### ✅ Implemented
 - [x] Multi-strategy backtesting engine
-- [x] SMA crossover strategy
-- [x] Breakout strategy  
+- [x] RSI mean reversion strategy
+- [x] Long/short position support
 - [x] CSV data loading
 - [x] MetaTrader 5 integration
 - [x] Risk management (position sizing, stop/target)

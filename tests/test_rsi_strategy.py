@@ -9,7 +9,7 @@ from engine import MultiStrategyEngine, EngineConfig
 
 def create_oversold_data(n=100):
     """Create data that will trigger RSI oversold conditions."""
-    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq="5T")
+    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq="5min")
 
     # Create strong downtrend then reversal (RSI will be oversold)
     base = 18000
@@ -31,7 +31,7 @@ def create_oversold_data(n=100):
 
 def create_overbought_data(n=100):
     """Create data that will trigger RSI overbought conditions."""
-    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq="5T")
+    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n, freq="5min")
 
     # Create strong uptrend then reversal (RSI will be overbought)
     base = 18000
