@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimal-trader"
+version = "0.0.1"
+description = "Minimal trading framework (backtest + strategies)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Bastiaan de Haan" }]
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "pytest>=8.3",
+    # voeg hier evt. runtime deps toe
+]
+
+[tool.setuptools]
+# FLAT LAYOUT: expliciet packages vinden in de root-map
+# We scannen alleen "." en sluiten noise mappen uit.
+package-dir = { }  # flat layout (geen src/)
+# Gebruik pattern-based find om alleen jouw codepakketten mee te nemen:
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "feeds*",
+  "strategies*",
+  "utils*",
+  "backtest*"
+]
+exclude = [
+  "logs*",
+  "output*",
+  "tests*",
+  "scripts*",
+  ".venv*",
+  "venv*",
+  "build*",
+  "dist*",
+  "notebooks*"
+]
+
+# Als je top-level .py modules wilt mee-installeren (alleen als ze bestaan):
+# uncomment en vul aan; anders weglaten
+# [tool.setuptools]
+# py-modules = ["engine", "main"]
+
+[tool.pytest.ini_options]
+# Pytest config in pyproject (PyCharm herkent dit)
+testpaths = ["tests"]
+addopts = "-ra -q"
+filterwarnings = [
+  "default",
+  # tijdelijke suppress tot je 'T'/'H' vervangt door 'min'/'h'
+  "ignore:'T' is deprecated:FutureWarning",
+  "ignore:'H' is deprecated:FutureWarning"
+]
