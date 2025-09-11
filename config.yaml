@@ -1,4 +1,4 @@
-# Multi-Strategy Trading Configuration
+# Multi-Strategy Trading Configuration - OPTIMIZED VERSION
 
 # MT5 Connection (FTMO)
 mt5:
@@ -9,36 +9,35 @@ mt5:
 # Data Settings
 data:
   symbol: "GER40.cash"
-  timeframe: "M1"  # Voor RSI is M1 of M5 beter!
-  bars: 10000  # Meer data voor mean reversion
-  resample: "5min"  # Resample naar 5 minuten
+  timeframe: "M5"  # Direct M5 ipv M1
+  bars: 10000
+  resample: null  # Geen resample
 
-# Engine Settings
+# Engine Settings - OPTIMIZED FOR OVERTRADING FIX
 engine:
   initial_capital: 10000.0
-  risk_per_trade: 1.0  # % of capital
+  risk_per_trade: 0.5  # Half het risico - was 1.0
   max_positions: 2  # Max 2 concurrent per strategy
   commission: 0.0002
   slippage: 0.0001
-  time_exit_bars: 100  # Sneller exit voor mean reversion
-  allow_shorts: true  # BELANGRIJK: Enable shorting!
+  time_exit_bars: 20   # VEEL korter - 20 bars = 20 minuten op M1
+  allow_shorts: true
 
-# Strategy Settings
+# Strategy Settings - HEAVILY OPTIMIZED
 strategies:
-  # RSI Mean Reversion - PRIMARY STRATEGY
   rsi_reversion:
     enabled: true
-    allocation: 100.0  # 100% of capital (only active strategy)
+    allocation: 100.0
     params:
       rsi_period: 14
-      oversold: 30.0
-      overbought: 70.0
+      oversold: 20.0    # EXTREMER - van 30 naar 20 (minder signalen)
+      overbought: 80.0  # EXTREMER - van 70 naar 80 (minder signalen)
       atr_period: 14
-      sl_multiplier: 1.2  # Tighter stops voor mean reversion
-      tp_multiplier: 1.8  # Smaller targets
-      use_next_open: false  # Trade immediately on signal
+      sl_multiplier: 1.2  # Tight stops
+      tp_multiplier: 3.0  # VERHOOGD - van 1.8 naar 3.0 (betere R:R)
+      use_next_open: false
 
 # Logging
 logging:
-  level: "INFO"  # Change to DEBUG for more details
+  level: "INFO"
   file: "logs/trader.log"

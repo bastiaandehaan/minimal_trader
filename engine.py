@@ -67,7 +67,8 @@ class MultiStrategyEngine:
         self.allocations[strategy.name] = allocation
         logger.info(f"Added strategy {strategy.name} with {allocation}% allocation")
 
-    def calculate_position_size(self, capital: float, entry: float, stop: float) -> float:
+    def calculate_position_size(self, capital: float, entry: float,
+                                stop: float) -> float:
         """Calculate position size based on risk."""
         risk_amount = capital * (self.config.risk_per_trade / 100)
         risk_points = abs(entry - stop)
@@ -75,8 +76,10 @@ class MultiStrategyEngine:
         if risk_points <= 0:
             return 0.0
 
-        size = risk_amount / risk_points
-        return round(size, 2)
+        # FIX: Voor GER40 - elke contract = €25 per punt
+        point_value = 25.0  # EUR per punt voor GER40
+        size = risk_amount / (risk_points * point_value)
+        return round(size, 3)  # 3 decimalen voor fractional contracts
 
     def run_backtest(self, data: pd.DataFrame) -> Dict:
         """Run all strategies on historical data."""
