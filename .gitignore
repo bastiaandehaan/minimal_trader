@@ -1,15 +1,57 @@
+# --- Python basics ---
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+
+# Virtual envs
 .venv/
 venv/
-.env
+env/
+ENV/
+
+# Editors / IDE
 .idea/
 .vscode/
-*.log
-output/*.csv
-output/*.png
-data/*.csv
-!data/.gitkeep
-*.parquet
-.mypy_cache/
+*.code-workspace
+
+# Packaging / build artefacts
+*.egg
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+
+# Test/typing caches
 .pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Project data/output (keep placeholders if needed)
+logs/
+output/
+data/
+!data/.gitkeep
+!output/.gitkeep
+
+# Notebooks & checkpoints
+*.ipynb
+.ipynb_checkpoints/
+
+# Local config/secrets (adjust to your project)
+*.env
+.env
+*.local.yaml
+*.secret.yaml
+
+# MT5 or broker temp exports
+*.hst
+*.dat
+*.log
