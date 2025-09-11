@@ -21,15 +21,8 @@ class GuardConfig:
 @dataclass
 class GuardState:
     opened_timestamps: Set[pd.Timestamp] = field(default_factory=set)
-    trades_per_day: Dict[pd.Timestamp, int] = field(default_factory=dict)  # local midnight key
+    trades_per_day: Dict[pd.Timestamp, int] = field(default_factory=dict)
     last_exit_bar_by_strategy: Dict[str, int] = field(default_factory=dict)
-
-
-def _as_local_day(ts: pd.Timestamp, tz_name: str) -> pd.Timestamp:
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    local = ts.tz_convert(tz_name)
-    return local.normalize()
 
 
 def apply_trading_hours(df: pd.DataFrame, cfg: GuardConfig) -> pd.DataFrame:
@@ -37,13 +30,13 @@ def apply_trading_hours(df: pd.DataFrame, cfg: GuardConfig) -> pd.DataFrame:
         return df
     if df.index.tz is None:
         df = df.tz_localize("UTC")
+
     local = df.copy()
     local.index = local.index.tz_convert(cfg.trading_hours_tz)
 
-    mask = (
-        (local.index.time >= pd.Timestamp(cfg.trading_hours_start).time())
-        & (local.index.time < pd.Timestamp(cfg.trading_hours_end).time())
-    )
+    start = pd.Timestamp(cfg.trading_hours_start).time()
+    end = pd.Timestamp(cfg.trading_hours_end).time()
+    mask = (local.index.time >= start) & (local.index.time < end)
     return df.loc[mask]
 
 
@@ -59,24 +52,26 @@ def in_cooldown(strategy_name: str, bar_i: int, cfg: GuardConfig, state: GuardSt
     return (last_exit is not None) and ((bar_i - last_exit) <= cfg.cooldown_bars)
 
 
-def allow_entry_at_bar(
-    ts: pd.Timestamp,
-    cfg: GuardConfig,
-    state: Optional[GuardState] = None,
-) -> bool:
-    if state is None:
-        state = GuardState()
+def allow_entry_at_bar(ts: pd.Timestamp, cfg: GuardConfig, state: Optional[GuardState] = None) -> bool:
+    # state optioneel om compat te houden
+    state = state or GuardState()
+
+    # één trade per bar?
     if cfg.one_trade_per_timestamp and ts in state.opened_timestamps:
         return False
-    local_day = _as_local_day(ts, cfg.trading_hours_tz)
+
+    utc_ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+    local_day = utc_ts.tz_convert(cfg.trading_hours_tz).normalize()
     if state.trades_per_day.get(local_day, 0) >= cfg.max_trades_per_day:
         return False
+
     return True
 
 
 def register_entry(ts: pd.Timestamp, cfg: GuardConfig, state: GuardState) -> None:
-    state.opened_timestamps.add(ts)
-    local_day = _as_local_day(ts, cfg.trading_hours_tz)
+    utc_ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+    state.opened_timestamps.add(utc_ts)
+    local_day = utc_ts.tz_convert(cfg.trading_hours_tz).normalize()
     state.trades_per_day[local_day] = state.trades_per_day.get(local_day, 0) + 1
 
 

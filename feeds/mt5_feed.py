@@ -1,119 +1,88 @@
 # feeds/mt5_feed.py
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Optional
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
-
-# MetaTrader5 is optioneel; import faalt netjes als het er niet is.
 try:
-    import MetaTrader5 as mt5  # type: ignore
-except Exception:  # ImportError of init-issues
-    mt5 = None  # we laten load() hierop reageren met een duidelijke fout
+    import MetaTrader5 as mt5
+except Exception as e:  # pragma: no cover
+    mt5 = None  # zodat unit-tests zonder MT5 niet crashen
 
 
 @dataclass
 class MT5Config:
     symbol: str = "GER40.cash"
-    timeframe: str = "M1"  # "M1","M5","M15","H1",...
-    bars: int = 10_000
+    timeframe: str = "M1"  # M1, M5, M15, H1, ...
+    bars: int = 10000
     tz: str = "UTC"
 
 
-def _tf_to_mt5(tf: str):
-    """Map eenvoudige string timeframes naar MT5 constants (indien beschikbaar)."""
-    if mt5 is None:
-        return None
-    tf = tf.upper()
-    mapping = {
-        "M1": getattr(mt5, "TIMEFRAME_M1", None),
-        "M5": getattr(mt5, "TIMEFRAME_M5", None),
-        "M15": getattr(mt5, "TIMEFRAME_M15", None),
-        "M30": getattr(mt5, "TIMEFRAME_M30", None),
-        "H1": getattr(mt5, "TIMEFRAME_H1", None),
-        "H4": getattr(mt5, "TIMEFRAME_H4", None),
-        "D1": getattr(mt5, "TIMEFRAME_D1", None),
-    }
-    return mapping.get(tf)
-
-
 class MT5Feed:
-    """Eenvoudige MT5 feed met veilige fallbacks en duidelijk logging."""
+    """Eenvoudige MT5 databrug → pandas DataFrame (UTC)."""
 
-    def __init__(self, config: Optional[MT5Config] = None, **kwargs):
-        # zowel MT5Feed(MT5Config(...)) als MT5Feed(symbol="...", ...) ondersteunen
-        if config is None:
-            config = MT5Config(**kwargs)
-        self.cfg = config
+    def __init__(self, cfg: Optional[MT5Config] = None) -> None:
+        self.cfg = cfg or MT5Config()
         self._connected = False
 
-    def connect(self) -> None:
-        if mt5 is None:
-            raise RuntimeError(
-                "MetaTrader5 module niet beschikbaar. Installeer 'MetaTrader5' "
-                "of gebruik --csv in plaats van MT5 input."
-            )
-        if self._connected:
-            return
-        if not mt5.initialize():
-            raise RuntimeError(f"MT5.initialize() faalde: {mt5.last_error()}")
-        self._connected = True
-
-        # Zorg dat symbool beschikbaar is
-        sym = self.cfg.symbol
-        if not mt5.symbol_select(sym, True):
-            raise RuntimeError(f"Kon symbool niet selecteren in MT5: {sym}")
-
-        info = mt5.symbol_info(sym)
-        spread = getattr(info, "spread", None)
-        logger.info("feeds.mt5_feed: Connected to MT5 - Symbol: %s, Spread: %s", sym, spread)
+    def connect(self) -> bool:
+        if mt5 is None:  # pragma: no cover
+            raise RuntimeError("MetaTrader5 Python package is not available")
+        self._connected = bool(mt5.initialize())
+        return self._connected
 
     def disconnect(self) -> None:
-        if mt5 is not None and self._connected:
+        if mt5 and self._connected:  # pragma: no cover
             mt5.shutdown()
         self._connected = False
-        logger.info("feeds.mt5_feed: Disconnected from MT5")
+
+    # Mapping text → MT5 timeframe constant
+    _TF_MAP = {
+        "M1": getattr(mt5, "TIMEFRAME_M1", None) if mt5 else None,
+        "M5": getattr(mt5, "TIMEFRAME_M5", None) if mt5 else None,
+        "M15": getattr(mt5, "TIMEFRAME_M15", None) if mt5 else None,
+        "H1": getattr(mt5, "TIMEFRAME_H1", None) if mt5 else None,
+        "H4": getattr(mt5, "TIMEFRAME_H4", None) if mt5 else None,
+        "D1": getattr(mt5, "TIMEFRAME_D1", None) if mt5 else None,
+    }
+
+    @staticmethod
+    def _normalize_freq(freq: Optional[str]) -> Optional[str]:
+        if not freq:
+            return None
+        # accepteer beide aliasen
+        return freq.replace("T", "min")
 
     def load(self, resample: Optional[str] = None) -> pd.DataFrame:
-        """Haal bars op uit MT5 en retourneer OHLCV DataFrame in UTC index.
-        resample: optionele pandas-freq (bv '5min', '15min').
-        """
-        self.connect()
-        try:
-            tf_const = _tf_to_mt5(self.cfg.timeframe)
-            if tf_const is None:
-                raise ValueError(f"Onbekend timeframe voor MT5: {self.cfg.timeframe}")
+        if mt5 is None:  # pragma: no cover
+            raise RuntimeError("MetaTrader5 Python package is not available")
 
-            rates = mt5.copy_rates_from_pos(self.cfg.symbol, tf_const, 0, self.cfg.bars)
-            if rates is None or len(rates) == 0:
-                raise RuntimeError("MT5 gaf geen data terug (rates is leeg)")
+        if not self._connected:  # pragma: no cover
+            raise RuntimeError("Call connect() before load().")
 
-            df = pd.DataFrame(rates)
-            # MT5 time is epoch seconds (UTC).
-            df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-            df = df.set_index("time")[["open", "high", "low", "close", "tick_volume"]].rename(
-                columns={"tick_volume": "volume"}
-            )
-            df.index = df.index.tz_convert(self.cfg.tz)
+        tf_const = self._TF_MAP.get(self.cfg.timeframe.upper())
+        if tf_const is None:  # pragma: no cover
+            raise ValueError(f"Unsupported timeframe: {self.cfg.timeframe}")
 
-            if resample:
-                df = df.resample(resample).agg(
-                    {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-                ).dropna()
+        rates = mt5.copy_rates_from_pos(self.cfg.symbol, tf_const, 0, int(self.cfg.bars))
+        if rates is None or len(rates) == 0:  # pragma: no cover
+            raise RuntimeError("No rates returned from MT5")
 
-            if not df.index.is_monotonic_increasing:
-                df = df.sort_index()
+        df = pd.DataFrame(rates)[["time", "open", "high", "low", "close", "tick_volume"]]
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        df = df.set_index("time").rename(columns={"tick_volume": "volume"}).sort_index()
 
-            logger.info(
-                "feeds.mt5_feed: Fetched %d bars from %s to %s",
-                len(df),
-                df.index[0],
-                df.index[-1],
-            )
-            return df
-        finally:
-            self.disconnect()
+        # Resample indien gevraagd
+        freq = self._normalize_freq(resample)
+        if freq:
+            o = df["open"].resample(freq).first()
+            h = df["high"].resample(freq).max()
+            l = df["low"].resample(freq).min()
+            c = df["close"].resample(freq).last()
+            v = df["volume"].resample(freq).sum().fillna(0)
+            df = pd.concat([o, h, l, c, v], axis=1).dropna(how="any")
+            df.columns = ["open", "high", "low", "close", "volume"]
+
+        return df[["open", "high", "low", "close", "volume"]]
