@@ -35,16 +35,23 @@ def apply_trading_hours(df: pd.DataFrame, cfg: GuardConfig) -> pd.DataFrame:
         # aanname: UTC tijden in csv; zet ze expliciet op UTC en converteer daarna
         df = df.copy()
         df.index = df.index.tz_localize("UTC")
+
     tz = pytz.timezone(cfg.trading_hours_tz)
     df_local = df.tz_convert(tz)
+
     start_h, start_m = map(int, cfg.trading_hours_start.split(":"))
     end_h, end_m = map(int, cfg.trading_hours_end.split(":"))
+
     mask = (
         (df_local.index.hour > start_h) | ((df_local.index.hour == start_h) & (df_local.index.minute >= start_m))
     ) & (
         (df_local.index.hour < end_h) | ((df_local.index.hour == end_h) & (df_local.index.minute <= end_m))
     )
-    return df[df_local.index[mask]]
+
+    # Belangrijk: rijen selecteren met .loc op df_local (niet kolommen),
+    # en daarna terug naar de oorspronkelijke tz.
+    filtered = df_local.loc[mask]
+    return filtered.tz_convert(df.index.tz)
 
 
 def should_skip_low_vol(atr_val: float, cfg: GuardConfig) -> bool:
