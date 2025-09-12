@@ -36,7 +36,7 @@ class RSIReversionStrategy(AbstractStrategy):
         self.atr_period = int(p.get("atr_period", 14))
         self.sl_multiplier = float(p.get("sl_multiplier", 1.5))
         self.tp_multiplier = float(p.get("tp_multiplier", 2.0))
-        self.use_next_open = True  # engine erzorgt NEXT_OPEN
+        # Engine handles NEXT_OPEN logic automatically
 
     @property
     def name(self) -> str:
@@ -126,19 +126,3 @@ class RSIReversionStrategy(AbstractStrategy):
             return False
         return True
     
-    # Legacy methods for backward compatibility with existing engine
-    def prepare(self, df: pd.DataFrame):
-        """Legacy method - no longer needed for real-time operation."""
-        pass
-    
-    def generate_signal(self, ts: pd.Timestamp, row: pd.Series) -> Optional[str]:
-        """Legacy method for backward compatibility with engine."""
-        # Create minimal dataframe for get_signal
-        temp_df = pd.DataFrame([row], index=[ts])
-        signal, _ = self.get_signal(temp_df, 0)
-        
-        if signal.type == SignalType.BUY:
-            return "long"
-        elif signal.type == SignalType.SELL:
-            return "short"
-        return None
