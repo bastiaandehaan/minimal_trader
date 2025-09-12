@@ -8,6 +8,7 @@ from typing import Dict, Optional, List, Tuple
 import numpy as np
 import pandas as pd
 
+from strategies.abstract import SignalType
 from utils.engine_guards import (
     GuardConfig,
     GuardState,
@@ -111,14 +112,8 @@ class MultiStrategyEngine:
             if hasattr(strat, 'reset'):
                 strat.reset()
 
-        # Strategie precompute (prepare) en signal-store
-        for strat_name, strat in self.strategies.items():
-            if hasattr(strat, "prepare"):
-                try:
-                    strat.prepare(df)  # bereidt intern de signalen
-                    logger.info("engine: Strategy %s prepared", strat_name)
-                except Exception as e:
-                    logger.exception("engine: Strategy %s prepare failed: %s", strat_name, e)
+        # No more precomputation - real-time signal generation only
+        logger.info("engine: Using real-time signal generation")
 
         # NEXT_OPEN staging: we gebruiken signal van bar i om op bar i+1 open te plaatsen
         prev_signals: Dict[str, Optional[str]] = {k: None for k in self.strategies}
@@ -191,7 +186,15 @@ class MultiStrategyEngine:
             for strat_name, strat in self.strategies.items():
                 sig = None
                 try:
-                    if hasattr(strat, "generate_signal"):
+                    if hasattr(strat, "get_signal"):
+                        # Use real-time interface: only data up to current bar
+                        signal, meta = strat.get_signal(df.iloc[:bar_i+1], bar_i)
+                        if signal.type == SignalType.BUY:
+                            sig = "long"
+                        elif signal.type == SignalType.SELL:
+                            sig = "short"
+                    elif hasattr(strat, "generate_signal"):
+                        # Fallback to legacy interface
                         sig = strat.generate_signal(ts, row)
                 except Exception as e:
                     logger.error(
