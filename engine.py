@@ -103,6 +103,13 @@ class MultiStrategyEngine:
         self.positions.clear()
         self.closed_positions.clear()
         self.equity = self.config.initial_capital
+        
+        # Clear strategy memory if available
+        for strat in self.strategies.values():
+            if hasattr(strat, '_signals'):
+                strat._signals = {}
+            if hasattr(strat, 'reset'):
+                strat.reset()
 
         # Strategie precompute (prepare) en signal-store
         for strat_name, strat in self.strategies.items():
@@ -144,8 +151,14 @@ class MultiStrategyEngine:
                 if (signal_prev == "short") and (not self.config.allow_shorts):
                     continue
 
-                # Risico-gestuurde sizing
-                entry_price = float(row["open"])
+                # Risico-gestuurde sizing with slippage
+                base_price = float(row["open"])
+                # Apply slippage - long positions pay higher, short positions pay lower
+                slippage_adjustment = base_price * self.config.slippage
+                if signal_prev == "long":
+                    entry_price = base_price + slippage_adjustment
+                else:  # short
+                    entry_price = base_price - slippage_adjustment
                 sl, tp = self._compute_sl_tp(signal_prev, entry_price, atr_val, strat)
                 if sl is None or tp is None:
                     continue
@@ -198,13 +211,22 @@ class MultiStrategyEngine:
     def _process_exits(self, bar_i: int, ts: pd.Timestamp, row: pd.Series, guard_state: GuardState):
         # time exit, SL/TP
         for pos in self.positions[:]:
-            # Time exit
+            # Time exit with slippage
             if bar_i - pos.entry_bar >= self.config.time_exit_bars:
                 pos.exit_time = ts
-                pos.exit_price = float(row["open"])  # exit op bar-open
+                base_price = float(row["open"])
+                # Apply slippage - exits are disadvantageous
+                slippage_adjustment = base_price * self.config.slippage
+                if pos.side == "long":
+                    pos.exit_price = base_price - slippage_adjustment  # sell lower
+                else:  # short
+                    pos.exit_price = base_price + slippage_adjustment  # buy higher
                 pos.exit_reason = "Time Exit"
                 pos.pnl = (pos.exit_price - pos.entry_price) * pos.size * (1 if pos.side == "long" else -1)
-                pos.pnl -= (pos.entry_price + pos.exit_price) * self.config.commission * pos.size
+                # Commission on notional value, not price sum
+                entry_commission = pos.entry_price * pos.size * self.config.commission
+                exit_commission = pos.exit_price * pos.size * self.config.commission
+                pos.pnl -= (entry_commission + exit_commission)
                 self.closed_positions.append(pos)
                 register_exit(pos.strategy, bar_i, guard_state)
                 self.positions.remove(pos)
@@ -221,7 +243,10 @@ class MultiStrategyEngine:
                     pos.exit_price = float(price)
                     pos.exit_reason = "Stop Loss" if hit_sl else "Take Profit"
                     pos.pnl = (pos.exit_price - pos.entry_price) * pos.size
-                    pos.pnl -= (pos.entry_price + pos.exit_price) * self.config.commission * pos.size
+                    # Commission on notional value, not price sum
+                    entry_commission = pos.entry_price * pos.size * self.config.commission
+                    exit_commission = pos.exit_price * pos.size * self.config.commission
+                    pos.pnl -= (entry_commission + exit_commission)
                     self.closed_positions.append(pos)
                     register_exit(pos.strategy, bar_i, guard_state)
                     self.positions.remove(pos)
@@ -235,7 +260,10 @@ class MultiStrategyEngine:
                     pos.exit_price = float(price)
                     pos.exit_reason = "Stop Loss" if hit_sl else "Take Profit"
                     pos.pnl = (pos.entry_price - pos.exit_price) * pos.size
-                    pos.pnl -= (pos.entry_price + pos.exit_price) * self.config.commission * pos.size
+                    # Commission on notional value, not price sum
+                    entry_commission = pos.entry_price * pos.size * self.config.commission
+                    exit_commission = pos.exit_price * pos.size * self.config.commission
+                    pos.pnl -= (entry_commission + exit_commission)
                     self.closed_positions.append(pos)
                     register_exit(pos.strategy, bar_i, guard_state)
                     self.positions.remove(pos)
@@ -301,8 +329,8 @@ class MultiStrategyEngine:
         final_capital = equity_curve[-1] if equity_curve else self.config.initial_capital
         total_return = 100.0 * (final_capital / self.config.initial_capital - 1.0)
 
-        # Sharpe placeholder (0.0) – optioneel fijnslijpen met per-bar returns
-        sharpe = 0.0
+        # Calculate Sharpe ratio from trade returns
+        sharpe = self._calculate_sharpe_ratio()
 
         logger.info(
             "engine: Backtest complete: trades=%d, return=%.2f%%, win_rate=%.2f%%, PF=%s, DD=%.2f%%",
@@ -324,6 +352,28 @@ class MultiStrategyEngine:
             "max_drawdown": max_dd,
         }
 
+    def _calculate_sharpe_ratio(self) -> float:
+        """Calculate annualized Sharpe ratio from closed positions."""
+        if len(self.closed_positions) < 2:
+            return 0.0
+        
+        # Calculate returns as percentage of initial capital per trade
+        returns = np.array([p.pnl / self.config.initial_capital for p in self.closed_positions])
+        
+        if len(returns) == 0 or np.std(returns) == 0:
+            return 0.0
+        
+        # Mean and std of returns
+        mean_return = np.mean(returns)
+        std_return = np.std(returns, ddof=1)
+        
+        # Basic Sharpe (assuming risk-free rate = 0)
+        sharpe = mean_return / std_return if std_return > 0 else 0.0
+        
+        # Annualize assuming ~250 trading days, but this depends on trade frequency
+        # For now, return raw Sharpe without annualization
+        return float(sharpe)
+    
     @staticmethod
     def _empty_results() -> Dict[str, Dict[str, float]]:
         return {
