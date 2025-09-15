@@ -1,62 +1,88 @@
-# config.yaml - Main Trading Configuration
-# Supports both CSV and MT5 data sources
+# config.yaml - Live Trading Ready Configuration
 
-# Data settings
+# Engine settings - risk management and execution
+engine:
+  initial_capital: 10000.0      # Starting capital
+  risk_per_trade: 0.5           # Risk per trade as % of capital (conservative for live)
+  max_positions: 2              # Max concurrent positions (conservative for live)
+  commission: 0.0002            # Commission rate (0.02%)
+  slippage: 0.0001              # Slippage rate (0.01%)
+  time_exit_bars: 100           # Force exit after N bars (shorter for live)
+  allow_shorts: false           # Disable shorts for live trading safety
+  min_risk_pts: 1.0             # Minimum stop distance in points
+
+# Data configuration
 data:
-  symbol: GER40.cash
-  resample: 5min
-  bars: 20000
+  symbol: GER40.cash            # Primary trading symbol
+  timeframe: M1                 # Data timeframe (M1, M5, M15, M30, H1, H4, D1)
+  resample: 5min                # Resample to this timeframe for signals
 
-# MT5 connection (optional - leave empty for demo/CSV mode)
+# MT5 connection settings
 mt5:
   symbol: GER40.cash
   timeframe: M1
-  bars: 20000
-  # Uncomment and fill for live MT5 connection:
-  # login: 123456
+  bars: 1000                    # Bars to fetch for backtesting
+  # Uncomment and configure for live trading:
+  # login: 123456789
   # password: "your_password"
-  # server: "FTMO-Demo"
+  # server: "your_server"
 
-# Engine settings
-engine:
-  initial_capital: 10000.0
-  risk_per_trade: 0.5
-  max_positions: 3
-  commission: 0.0002
-  slippage: 0.0001
-  time_exit_bars: 100
-  allow_shorts: true
-  min_risk_pts: 0.5
-
-# Strategy settings - Choose ONE strategy
+# Trading strategies
 strategies:
   # RSI Mean Reversion Strategy
   rsi_reversion:
     enabled: true
-    allocation: 100.0
+    allocation: 100.0           # 100% of capital allocation
     params:
-      rsi_period: 14
-      oversold: 35.0
-      overbought: 65.0
-      atr_period: 14
-      sl_multiplier: 2.0
-      tp_multiplier: 1.5
+      rsi_period: 14            # RSI calculation period
+      oversold: 35.0            # Balanced oversold level (more trades)
+      overbought: 65.0          # Balanced overbought level (more trades)
+      atr_period: 14            # ATR calculation period
+      sl_multiplier: 2.5        # Stop loss distance (conservative)
+      tp_multiplier: 1.2        # Take profit distance (conservative)
 
-  # Simple Test Strategy (for framework validation)
+  # Simple test strategy (disabled for live)
   simple_test:
-    enabled: false              # Set to true to use this instead
+    enabled: false
     allocation: 100.0
     params:
       entry_bar: 100
       trade_interval: 500
-      max_trades: 10
+      max_trades: 5
 
-# Trading hours and guards
+# Risk guards and filters
 guards:
-  trading_hours_tz: "Europe/Berlin"
-  trading_hours_start: "08:00"
-  trading_hours_end: "22:00"
-  min_atr_pts: 10.0
-  cooldown_bars: 3
-  max_trades_per_day: 10
-  one_trade_per_timestamp: true
+  trading_hours_tz: "Europe/Brussels"
+  trading_hours_start: "09:00"   # Market open
+  trading_hours_end: "17:00"     # Market close (conservative hours)
+  min_atr_pts: 15.0              # Minimum volatility filter
+  cooldown_bars: 5               # Bars to wait between trades per strategy
+  max_trades_per_day: 3          # Daily trade limit (conservative)
+  one_trade_per_timestamp: true  # Prevent multiple trades at same time
+
+# Live trading specific settings
+live:
+  # Daily risk limits
+  max_daily_loss_pct: 2.0       # Stop trading if lose 2% of capital in one day
+  max_positions_per_strategy: 1  # Max positions per strategy
+
+  # Position management
+  trailing_stop_enabled: false   # Enable trailing stops
+  trailing_stop_distance: 20.0   # Trailing stop distance in points
+
+  # Notifications (implement as needed)
+  notifications:
+    email_enabled: false
+    webhook_enabled: false
+    discord_enabled: false
+
+  # Monitoring
+  heartbeat_interval: 300       # Send heartbeat every 5 minutes
+  log_level: INFO               # DEBUG, INFO, WARNING, ERROR
+  save_trades_to_csv: true      # Save all trades to CSV
+
+# Backtest specific settings
+backtest:
+  save_detailed_logs: false     # Save detailed backtest logs
+  plot_equity_curve: false     # Generate equity curve plot
+  export_trades: true          # Export trade list to CSV

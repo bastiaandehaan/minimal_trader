@@ -1,8 +1,8 @@
-# strategies/rsi_reversion.py
+# strategies/rsi_reversion.py - CLEANED VERSION
 from __future__ import annotations
 
 import logging
-from typing import Optional, Dict, Tuple
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -10,186 +10,147 @@ import pandas as pd
 from .abstract import AbstractStrategy, Signal, SignalType
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
-def _rsi(series: pd.Series, period: int) -> pd.Series:
-    """Classic Wilder RSI (EMA-based)."""
+def _calculate_rsi(series: pd.Series, period: int) -> pd.Series:
+    """Wilder's RSI calculation."""
     delta = series.diff()
     up = delta.clip(lower=0.0)
     down = -delta.clip(upper=0.0)
+
+    # Use Wilder's smoothing (same as EMA with alpha = 1/period)
     roll_up = up.ewm(alpha=1 / period, adjust=False).mean()
     roll_down = down.ewm(alpha=1 / period, adjust=False).mean()
+
     rs = roll_up / roll_down.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
     return rsi.fillna(50.0)
 
 
-class RSIReversionStrategy(AbstractStrategy):
-    def __init__(self, params: Optional[Dict] = None):
-        super().__init__(params)
-        p = params or {}
-        self._name = f"RSIRev_rsi{p.get('rsi_period', 14)}_atr{p.get('atr_period', 14)}"
-        self.rsi_period = int(p.get("rsi_period", 14))
-        self.oversold = float(p.get("oversold", 30.0))
-        self.overbought = float(p.get("overbought", 70.0))
-        self.atr_period = int(p.get("atr_period", 14))
-        self.sl_multiplier = float(p.get("sl_multiplier", 1.5))
-        self.tp_multiplier = float(p.get("tp_multiplier", 2.0))
-        # Engine handles NEXT_OPEN logic automatically
+def _calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
+    """Average True Range calculation."""
+    high_low = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift()).abs()
+    low_close = (df['low'] - df['close'].shift()).abs()
 
-        # Caches to avoid repeated computation. These will be filled by prepare().
-        # df_full holds the full dataset with indicators computed once.
-        # _signals maps timestamps to a simple direction string ("long"/"short").
-        self.df_full: Optional[pd.DataFrame] = None
-        self._signals: Dict[pd.Timestamp, str] = {}
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return true_range.rolling(window=period, min_periods=period).mean()
+
+
+class RSIReversionStrategy(AbstractStrategy):
+    """Mean reversion strategy using RSI oversold/overbought levels."""
+
+    def __init__(self, params: Dict[str, Any] = None):
+        super().__init__(params)
+
+        # Strategy parameters with defaults
+        self.rsi_period = int(self.params.get('rsi_period', 14))
+        self.oversold = float(self.params.get('oversold', 30.0))
+        self.overbought = float(self.params.get('overbought', 70.0))
+        self.atr_period = int(self.params.get('atr_period', 14))
+        self.sl_multiplier = float(self.params.get('sl_multiplier', 2.0))
+        self.tp_multiplier = float(self.params.get('tp_multiplier', 1.5))
+
+        # Build name from parameters
+        self._strategy_name = (f"RSI_p{self.rsi_period}_"
+                               f"os{self.oversold}_ob{self.overbought}_"
+                               f"atr{self.atr_period}")
 
     @property
     def name(self) -> str:
-        return self._name
+        return self._strategy_name
 
     @property
     def required_bars(self) -> int:
-        return max(self.rsi_period, self.atr_period) + 1
+        return max(self.rsi_period, self.atr_period) + 5  # Buffer for calculations
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add RSI and ATR indicators to dataframe."""
+        """Add RSI and ATR indicators."""
         df = df.copy()
 
         # Calculate RSI
-        df['rsi'] = _rsi(df['close'], self.rsi_period)
+        df['rsi'] = _calculate_rsi(df['close'], self.rsi_period)
 
         # Calculate ATR if not present
         if 'atr' not in df.columns:
-            tr_high_low = df['high'] - df['low']
-            tr_high_close = (df['high'] - df['close'].shift()).abs()
-            tr_low_close = (df['low'] - df['close'].shift()).abs()
-            tr = pd.concat([tr_high_low, tr_high_close, tr_low_close], axis=1).max(axis=1)
-            df['atr'] = tr.rolling(window=self.atr_period, min_periods=self.atr_period).mean()
+            df['atr'] = _calculate_atr(df, self.atr_period)
 
         return df
 
-    def get_signal(self, df: pd.DataFrame, i: int) -> Tuple[Signal, Dict]:
-        """Generate signal at bar i using ONLY data up to bar i (no look-ahead)."""
-        if i < self.required_bars:
-            return Signal(SignalType.NONE), {}
+    def get_signal(self, df: pd.DataFrame, bar_idx: int) -> Signal:
+        """Generate signal using only data up to bar_idx."""
+        # Check if we have enough data
+        if bar_idx < self.required_bars:
+            return Signal(SignalType.NONE)
 
-        # Only use data up to current bar
-        data_slice = df.iloc[: i + 1]
-        current_row = df.iloc[i]
+        # Get data slice up to current bar (no look-ahead)
+        data = df.iloc[:bar_idx + 1]
+        current_bar = data.iloc[-1]
 
-        # Use precomputed indicators if present on the slice; otherwise compute them
-        if "rsi" in data_slice.columns and "atr" in data_slice.columns:
-            current_rsi = data_slice["rsi"].iloc[-1]
-            current_atr = data_slice["atr"].iloc[-1]
-        else:
-            data_with_indicators = self.calculate_indicators(data_slice)
-            current_rsi = data_with_indicators["rsi"].iloc[-1]
-            current_atr = data_with_indicators["atr"].iloc[-1]
+        # Ensure indicators are calculated
+        if 'rsi' not in data.columns or 'atr' not in data.columns:
+            data = self.calculate_indicators(data)
+            current_bar = data.iloc[-1]
 
-        if pd.isna(current_rsi) or pd.isna(current_atr):
-            return Signal(SignalType.NONE), {}
+        # Get current values
+        current_rsi = current_bar['rsi']
+        current_atr = current_bar['atr']
+        current_close = current_bar['close']
 
-        entry_price = float(current_row["close"])
+        # Skip if indicators are invalid
+        if pd.isna(current_rsi) or pd.isna(current_atr) or current_atr <= 0:
+            return Signal(SignalType.NONE)
 
-        # Long signal on oversold
-        if current_rsi < self.oversold:
-            stop_loss = entry_price - (self.sl_multiplier * current_atr)
-            take_profit = entry_price + (self.tp_multiplier * current_atr)
+        # Check for oversold condition (buy signal)
+        if current_rsi <= self.oversold:
+            stop_loss = current_close - (self.sl_multiplier * current_atr)
+            take_profit = current_close + (self.tp_multiplier * current_atr)
 
-            return (
-                Signal(
-                    type=SignalType.BUY,
-                    entry=entry_price,
-                    stop=stop_loss,
-                    target=take_profit,
-                    reason=f"RSI oversold: {current_rsi:.1f}",
-                    strategy=self.name,
-                    timestamp=current_row.name,
-                ),
-                {"rsi": current_rsi, "atr": current_atr},
-            )
+            return Signal(type=SignalType.BUY, entry=current_close, stop=stop_loss,
+                target=take_profit,
+                reason=f"RSI oversold: {current_rsi:.1f} <= {self.oversold}",
+                confidence=min(1.0, (self.oversold - current_rsi) / 10.0),
+                # Stronger when more oversold
+                metadata={'rsi': current_rsi, 'atr': current_atr, 'bar_idx': bar_idx,
+                    'timestamp': current_bar.name})
 
-        # Short signal on overbought
-        elif current_rsi > self.overbought:
-            stop_loss = entry_price + (self.sl_multiplier * current_atr)
-            take_profit = entry_price - (self.tp_multiplier * current_atr)
+        # Check for overbought condition (sell signal)
+        elif current_rsi >= self.overbought:
+            stop_loss = current_close + (self.sl_multiplier * current_atr)
+            take_profit = current_close - (self.tp_multiplier * current_atr)
 
-            return (
-                Signal(
-                    type=SignalType.SELL,
-                    entry=entry_price,
-                    stop=stop_loss,
-                    target=take_profit,
-                    reason=f"RSI overbought: {current_rsi:.1f}",
-                    strategy=self.name,
-                    timestamp=current_row.name,
-                ),
-                {"rsi": current_rsi, "atr": current_atr},
-            )
+            return Signal(type=SignalType.SELL, entry=current_close, stop=stop_loss,
+                target=take_profit,
+                reason=f"RSI overbought: {current_rsi:.1f} >= {self.overbought}",
+                confidence=min(1.0, (current_rsi - self.overbought) / 10.0),
+                # Stronger when more overbought
+                metadata={'rsi': current_rsi, 'atr': current_atr, 'bar_idx': bar_idx,
+                    'timestamp': current_bar.name})
 
-        return Signal(SignalType.NONE), {"rsi": current_rsi, "atr": current_atr}
+        # No signal
+        return Signal(SignalType.NONE,
+            metadata={'rsi': current_rsi, 'atr': current_atr, 'bar_idx': bar_idx})
 
     def validate_params(self) -> bool:
         """Validate strategy parameters."""
-        if self.rsi_period <= 0:
+        if self.rsi_period <= 0 or self.atr_period <= 0:
+            logger.error(
+                f"{self.name}: Invalid periods - RSI:{self.rsi_period}, ATR:{self.atr_period}")
             return False
-        if self.atr_period <= 0:
-            return False
+
         if self.oversold >= self.overbought:
+            logger.error(
+                f"{self.name}: Invalid RSI levels - oversold:{self.oversold} >= overbought:{self.overbought}")
             return False
+
         if self.sl_multiplier <= 0 or self.tp_multiplier <= 0:
+            logger.error(
+                f"{self.name}: Invalid multipliers - SL:{self.sl_multiplier}, TP:{self.tp_multiplier}")
             return False
+
+        if not (0 < self.oversold < 50 < self.overbought < 100):
+            logger.error(
+                f"{self.name}: RSI levels out of logical range - OS:{self.oversold}, OB:{self.overbought}")
+            return False
+
         return True
-
-    # -------------------------------------------------------------
-    # Precompute RSI/ATR and signals for the entire dataset once.
-    # This method must be called by the engine before backtest/live run.
-    # It respects the no look-ahead constraint by relying on get_signal()
-    # which only uses data up to the current index.
-    def prepare(self, df: pd.DataFrame):
-        """Precompute indicators and direction signals for all bars.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Input data with columns at least ['open','high','low','close'] and a datetime index.
-        """
-        logger.info("Preparing %s with %d rows", self.name, len(df))
-        # Compute indicators once on the full dataset
-        self.df_full = self.calculate_indicators(df)
-        # Reset the signal cache
-        self._signals = {}
-        # Generate signals for each bar starting after warmup
-        for i in range(self.required_bars, len(self.df_full)):
-            signal, meta = self.get_signal(self.df_full, i)
-            ts = self.df_full.index[i]
-            if signal.type == SignalType.BUY:
-                self._signals[ts] = "long"
-                logger.debug(
-                    "Precomputed BUY at %s (RSI=%.2f)",
-                    ts,
-                    float(meta.get("rsi", np.nan)),
-                )
-            elif signal.type == SignalType.SELL:
-                self._signals[ts] = "short"
-                logger.debug(
-                    "Precomputed SELL at %s (RSI=%.2f)",
-                    ts,
-                    float(meta.get("rsi", np.nan)),
-                )
-        logger.info("Prepared %d signals", len(self._signals))
-
-    def generate_signal(self, ts: pd.Timestamp, row: pd.Series) -> Optional[str]:
-        """Return precomputed signal for a given timestamp.
-
-        The trading engine will call this per bar. It simply looks up
-        the cached direction for the given timestamp. A return value of
-        None indicates no trade action.
-        """
-        sig = self._signals.get(ts)
-        if sig is not None:
-            logger.info("Signal at %s -> %s", ts, sig)
-        else:
-            logger.debug("No signal at %s", ts)
-        return sig
