@@ -10,15 +10,12 @@ import pandas as pd
 import yaml
 
 from engine import MultiStrategyEngine, EngineConfig
-from strategies.rsi_reversion import RSIReversionStrategy
 from feeds.csv_feed import CSVFeed
 from utils.engine_guards import GuardConfig
 
 # logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", )
 logger = logging.getLogger("main")
 logger.setLevel(logging.INFO)
 
@@ -37,38 +34,46 @@ def _load_config(path: Optional[str]) -> Dict:
 
 def _build_engine_from_config(cfg: Dict) -> MultiStrategyEngine:
     ecfg = cfg.get("engine") or {}
-    eng = MultiStrategyEngine(EngineConfig(
-        initial_capital=float(ecfg.get("initial_capital", 10_000.0)),
-        risk_per_trade=float(ecfg.get("risk_per_trade", 1.0)),
-        max_positions=int(ecfg.get("max_positions", 3)),
-        commission=float(ecfg.get("commission", 0.0002)),
-        slippage=float(ecfg.get("slippage", 0.0)),
-        time_exit_bars=int(ecfg.get("time_exit_bars", 200)),
-        allow_shorts=bool(ecfg.get("allow_shorts", True)),
-        min_risk_pts=float(ecfg.get("min_risk_pts", 0.5)),
-    ))
+    eng = MultiStrategyEngine(
+        EngineConfig(initial_capital=float(ecfg.get("initial_capital", 10_000.0)),
+            risk_per_trade=float(ecfg.get("risk_per_trade", 1.0)),
+            max_positions=int(ecfg.get("max_positions", 3)),
+            commission=float(ecfg.get("commission", 0.0002)),
+            slippage=float(ecfg.get("slippage", 0.0)),
+            time_exit_bars=int(ecfg.get("time_exit_bars", 200)),
+            allow_shorts=bool(ecfg.get("allow_shorts", True)),
+            min_risk_pts=float(ecfg.get("min_risk_pts", 0.5)), ))
     return eng
 
 
-def _build_strategy_from_config(cfg: Dict) -> RSIReversionStrategy:
-    scfg = ((cfg.get("strategies") or {}).get("rsi_reversion") or {})
-    params = scfg.get("params") or {}
-    strat = RSIReversionStrategy(params)
-    allocation = float(scfg.get("allocation", 100.0))
-    return strat, allocation
+def _build_strategy_from_config(cfg: Dict):
+    """Build strategy and allocation from config."""
+    strat_config = cfg.get('strategies', {})
+
+    # Simple Test Strategy
+    if strat_config.get('simple_test', {}).get('enabled', False):
+        from strategies.simple_test import SimpleTestStrategy
+        params = strat_config['simple_test'].get('params', {})
+        allocation = float(strat_config['simple_test'].get('allocation', 100.0))
+        return SimpleTestStrategy(params), allocation
+
+    # RSI Reversion Strategy (fallback)
+    from strategies.rsi_reversion import RSIReversionStrategy
+    scfg = strat_config.get('rsi_reversion', {})
+    params = scfg.get('params', {})
+    allocation = float(scfg.get('allocation', 100.0))
+    return RSIReversionStrategy(params), allocation
 
 
 def _build_guards_from_config(cfg: Dict) -> GuardConfig:
     g = cfg.get("guards") or {}
-    return GuardConfig(
-        trading_hours_tz=g.get("trading_hours_tz", "Europe/Brussels"),
+    return GuardConfig(trading_hours_tz=g.get("trading_hours_tz", "Europe/Brussels"),
         trading_hours_start=g.get("trading_hours_start", "08:00"),
         trading_hours_end=g.get("trading_hours_end", "22:00"),
         min_atr_pts=float(g.get("min_atr_pts", 20.0)),
         cooldown_bars=int(g.get("cooldown_bars", 3)),
         max_trades_per_day=int(g.get("max_trades_per_day", 10)),
-        one_trade_per_timestamp=bool(g.get("one_trade_per_timestamp", True)),
-    )
+        one_trade_per_timestamp=bool(g.get("one_trade_per_timestamp", True)), )
 
 
 def _print_results(results: Dict):
@@ -95,7 +100,8 @@ def _print_results(results: Dict):
         print("STRATEGY BREAKDOWN")
         print("----------------------------------------\n")
         for _, r in by_strat.iterrows():
-            print(f"{r['strategy']}: Trades={int(r['count'])}, Total PnL=${r['sum']:.2f}")
+            print(
+                f"{r['strategy']}: Trades={int(r['count'])}, Total PnL=${r['sum']:.2f}")
 
         print("\nTrades saved to: output/trades.csv")
 
@@ -113,7 +119,8 @@ def run_backtest_csv(csv_path: str, cfg: Dict):
     engine.add_strategy(strat, alloc)
 
     guard_cfg = _build_guards_from_config(cfg)
-    logger.info("main: Running backtest on %d bars from %s to %s", len(df), df.index[0], df.index[-1])
+    logger.info("main: Running backtest on %d bars from %s to %s", len(df), df.index[0],
+                df.index[-1])
     results = engine.run_backtest(df, guard_cfg)
 
     out_dir = Path("output")
@@ -137,11 +144,8 @@ def run_backtest_mt5(cfg: Dict):
     bars = int(mt5_cfg.get("bars", 10_000))
 
     feed = MT5Feed(symbol=symbol, timeframe=timeframe, bars=bars)
-    if not feed.connect(
-        login=mt5_cfg.get("login"),
-        password=mt5_cfg.get("password"),
-        server=mt5_cfg.get("server"),
-    ):
+    if not feed.connect(login=mt5_cfg.get("login"), password=mt5_cfg.get("password"),
+            server=mt5_cfg.get("server"), ):
         logger.error("Failed to connect MT5")
         return
     df = feed.fetch()
@@ -151,9 +155,9 @@ def run_backtest_mt5(cfg: Dict):
     data_cfg = cfg.get("data") or {}
     resample = data_cfg.get("resample")
     if resample:
-        df = df.resample(resample).agg({
-            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-        }).dropna()
+        df = df.resample(resample).agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last",
+                "volume": "sum"}).dropna()
 
     engine = _build_engine_from_config(cfg)
     strat, alloc = _build_strategy_from_config(cfg)
@@ -163,7 +167,8 @@ def run_backtest_mt5(cfg: Dict):
     logger.info("main: Running backtest with MT5 data")
     results = engine.run_backtest(df, guard_cfg)
 
-    out_dir = Path("output"); out_dir.mkdir(exist_ok=True)
+    out_dir = Path("output");
+    out_dir.mkdir(exist_ok=True)
     results["positions"].to_csv(out_dir / "trades.csv", index=False)
     _print_results(results)
 

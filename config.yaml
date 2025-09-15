@@ -1,58 +1,62 @@
-# config.yaml - Optimized RSI Mean Reversion Configuration
-# Place this in your project root or output/ folder
+# config.yaml - Main Trading Configuration
+# Supports both CSV and MT5 data sources
 
 # Data settings
 data:
   symbol: GER40.cash
-  resample: 5min        # Resample to 5-minute bars (reduces noise)
-  bars: 5000            # Number of bars to load from MT5
-  
-# MT5 connection (optional for CSV backtests)
+  resample: 5min
+  bars: 20000
+
+# MT5 connection (optional - leave empty for demo/CSV mode)
 mt5:
-  login: your_account_number
-  password: "your_password"
-  server: "FTMO-Demo"
+  symbol: GER40.cash
+  timeframe: M1
+  bars: 20000
+  # Uncomment and fill for live MT5 connection:
+  # login: 123456
+  # password: "your_password"
+  # server: "FTMO-Demo"
 
 # Engine settings
 engine:
   initial_capital: 10000.0
-  risk_per_trade: 0.5         # Conservative: 0.5% risk per trade
-  max_positions: 3            # Allow multiple positions
-  commission: 0.0002          # 2 basis points per leg
-  slippage: 0.0001            # 1 basis point slippage
-  time_exit_bars: 100         # Exit after 100 bars (8+ hours on 5min)
-  allow_shorts: true          # Enable short trades
+  risk_per_trade: 0.5
+  max_positions: 3
+  commission: 0.0002
+  slippage: 0.0001
+  time_exit_bars: 100
+  allow_shorts: true
+  min_risk_pts: 0.5
 
-# Strategy settings
+# Strategy settings - Choose ONE strategy
 strategies:
+  # RSI Mean Reversion Strategy
   rsi_reversion:
     enabled: true
-    allocation: 100.0         # Use 100% of capital
+    allocation: 100.0
     params:
-      # RSI parameters
-      rsi_period: 14          # Standard RSI period
-      oversold: 35.0          # Less extreme (was 30)
-      overbought: 65.0        # Less extreme (was 70)
-      
-      # ATR-based risk management
-      atr_period: 14          # ATR period for volatility
-      sl_multiplier: 2.0      # Stop loss = 2x ATR
-      tp_multiplier: 1.5      # Take profit = 1.5x ATR (favorable R:R)
-      
-      # Entry method
-      use_next_open: false    # Use current bar close for entry
+      rsi_period: 14
+      oversold: 35.0
+      overbought: 65.0
+      atr_period: 14
+      sl_multiplier: 2.0
+      tp_multiplier: 1.5
 
-# Logging settings
-logging:
-  level: INFO                 # Use DEBUG for more details
-  file: logs/trader.log
+  # Simple Test Strategy (for framework validation)
+  simple_test:
+    enabled: false              # Set to true to use this instead
+    allocation: 100.0
+    params:
+      entry_bar: 100
+      trade_interval: 500
+      max_trades: 10
 
-# Trading hours filter (optional)
+# Trading hours and guards
 guards:
   trading_hours_tz: "Europe/Berlin"
   trading_hours_start: "08:00"
   trading_hours_end: "22:00"
-  min_atr_pts: 10.0           # Minimum ATR in points
-  cooldown_bars: 3            # Bars to wait after exit
-  max_trades_per_day: 10      # Maximum trades per day
+  min_atr_pts: 10.0
+  cooldown_bars: 3
+  max_trades_per_day: 10
   one_trade_per_timestamp: true
