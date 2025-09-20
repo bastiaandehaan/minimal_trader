@@ -1,4 +1,4 @@
-# main.py - FINAL VERSION WITH ALL FEATURES
+# main.py - FINAL VERSION WITH DAX TREND CONTINUATION STRATEGY
 from __future__ import annotations
 
 import argparse
@@ -68,6 +68,18 @@ def create_strategies_from_config(config: Dict) -> List[Tuple[object, float]]:
     """Create strategy instances from configuration."""
     strategies = []
     strategies_cfg = config.get('strategies', {})
+
+    # DAX Trend Continuation Strategy
+    dax_trend_cfg = strategies_cfg.get('dax_trend_continuation', {})
+    if dax_trend_cfg.get('enabled', False):
+        from strategies.dax_sr_breakout import DAXTrendContinuationStrategy
+
+        params = dax_trend_cfg.get('params', {})
+        allocation = float(dax_trend_cfg.get('allocation', 100.0))
+
+        strategy = DAXTrendContinuationStrategy(params)
+        strategies.append((strategy, allocation))
+        logger.info(f"Loaded DAX Trend Continuation strategy with {allocation}% allocation")
 
     # RSI Reversion Strategy
     rsi_cfg = strategies_cfg.get('rsi_reversion', {})
@@ -322,58 +334,111 @@ def test_mt5_connection(config: Dict):
 
 def create_sample_config():
     """Create a sample configuration file."""
-    config = {'engine': {'initial_capital': 10000.0, 'risk_per_trade': 1.0,
-        'max_positions': 3, 'commission': 0.0002, 'slippage': 0.0001,
-        'time_exit_bars': 200, 'allow_shorts': True, 'min_risk_pts': 0.5},
-        'data': {'symbol': 'GER40.cash', 'timeframe': 'M1', 'resample': '5min'},
-        'mt5': {'symbol': 'GER40.cash', 'timeframe': 'M1', 'bars': 10000,
+    config = {
+        'engine': {
+            'initial_capital': 10000.0,
+            'risk_per_trade': 1.5,
+            'max_positions': 2,
+            'commission': 0.0002,
+            'slippage': 0.0001,
+            'time_exit_bars': 50,
+            'allow_shorts': True,
+            'min_risk_pts': 20.0
+        },
+        'data': {
+            'symbol': 'GER40.cash',
+            'timeframe': 'H4',
+            'resample': None
+        },
+        'mt5': {
+            'symbol': 'GER40.cash',
+            'timeframe': 'H4',
+            'bars': 2000,
             # 'login': 123456,
             # 'password': 'your_password',
             # 'server': 'FTMO-Demo'
-        }, 'strategies': {'rsi_reversion': {'enabled': True, 'allocation': 100.0,
-            'params': {'rsi_period': 14, 'oversold': 35.0, 'overbought': 65.0,
-                'atr_period': 14, 'sl_multiplier': 2.0, 'tp_multiplier': 1.5}},
-            'simple_test': {'enabled': False, 'allocation': 100.0,
-                'params': {'entry_bar': 100, 'trade_interval': 500, 'max_trades': 5}}},
-        'guards': {'trading_hours_tz': 'Europe/Brussels',
-            'trading_hours_start': '08:00', 'trading_hours_end': '22:00',
-            'min_atr_pts': 10.0, 'cooldown_bars': 3, 'max_trades_per_day': 10,
-            'one_trade_per_timestamp': True}}
+        },
+        'strategies': {
+            'dax_trend_continuation': {
+                'enabled': True,
+                'allocation': 100.0,
+                'params': {
+                    'ema_fast': 8,
+                    'ema_slow': 21,
+                    'atr_period': 14,
+                    'sl_multiplier': 2.5,
+                    'tp_multiplier': 1.8,
+                    'min_trend_strength': 25.0,
+                    'pullback_lookback': 3
+                }
+            },
+            'rsi_reversion': {
+                'enabled': False,
+                'allocation': 100.0,
+                'params': {
+                    'rsi_period': 14,
+                    'oversold': 35.0,
+                    'overbought': 65.0,
+                    'atr_period': 14,
+                    'sl_multiplier': 2.0,
+                    'tp_multiplier': 1.5
+                }
+            },
+            'simple_test': {
+                'enabled': False,
+                'allocation': 100.0,
+                'params': {
+                    'entry_bar': 100,
+                    'trade_interval': 500,
+                    'max_trades': 5
+                }
+            }
+        },
+        'guards': {
+            'trading_hours_tz': 'Europe/Berlin',
+            'trading_hours_start': '08:00',
+            'trading_hours_end': '22:00',
+            'min_atr_pts': 30.0,
+            'cooldown_bars': 2,
+            'max_trades_per_day': 2,
+            'one_trade_per_timestamp': True
+        }
+    }
 
-    config_file = Path('config_sample.yaml')
+    config_file = Path('config_dax_4h_sample.yaml')
     with config_file.open('w') as f:
         yaml.dump(config, f, default_flow_style=False, indent=2)
 
-    print(f"Sample configuration created: {config_file}")
-    print("Edit this file with your settings before running.")
+    print(f"Sample DAX 4H configuration created: {config_file}")
+    print("Edit this file with your MT5 settings before running.")
 
 
 def build_argument_parser():
     """Build command line argument parser."""
     parser = argparse.ArgumentParser(
-        description="Minimal Trader - Backtesting and Live Trading Framework",
+        description="Minimal Trader - DAX 4H Trend Continuation Framework",
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""
 Examples:
-  # Create sample config
+  # Create sample config for DAX 4H
   python main.py config --sample
 
   # Test MT5 connection
-  python main.py test --config config.yaml
+  python main.py test --config config_dax_4h.yaml
 
   # Run CSV backtest
-  python main.py backtest --csv data/GER40.csv --config config.yaml
+  python main.py backtest --csv data/GER40_4H.csv --config config_dax_4h.yaml
 
-  # Run MT5 backtest
-  python main.py backtest --mt5 --config config.yaml
+  # Run MT5 backtest for DAX 4H
+  python main.py backtest --mt5 --config config_dax_4h.yaml
 
   # Run live trading (paper trading)
-  python main.py live --config config.yaml --dry-run
+  python main.py live --config config_dax_4h.yaml --dry-run
 
   # Run live trading with monitoring
-  python main.py live --config config.yaml --monitor
+  python main.py live --config config_dax_4h.yaml --monitor
 
   # Run REAL live trading (BE CAREFUL!)
-  python main.py live --config config.yaml
+  python main.py live --config config_dax_4h.yaml
         """)
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
@@ -381,7 +446,7 @@ Examples:
     # Config command
     config_parser = subparsers.add_parser('config', help='Configuration management')
     config_parser.add_argument('--sample', action='store_true',
-                               help='Create sample config file')
+                               help='Create sample DAX 4H config file')
 
     # Test command
     test_parser = subparsers.add_parser('test', help='Test connections')
