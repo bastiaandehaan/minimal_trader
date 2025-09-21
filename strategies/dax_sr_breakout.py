@@ -6,7 +6,6 @@ from strategies.abstract import AbstractStrategy, Signal, SignalType
 
 logger = logging.getLogger(__name__)
 
-
 class DAXSRBreakoutStrategy(AbstractStrategy):
     """
     DAX Support/Resistance Breakout Strategy with improved
@@ -21,6 +20,15 @@ class DAXSRBreakoutStrategy(AbstractStrategy):
         self.ema_fast_period: int = params.get("ema_fast_period", 8)
         self.ema_slow_period: int = params.get("ema_slow_period", 21)
         self.time_exit_bars: int = params.get("time_exit_bars", 200)
+
+    @property
+    def name(self) -> str:
+        """Return the name of the strategy."""
+        return "DAXSRBreakout"
+
+    def required_bars(self) -> int:
+        """Return the minimum number of bars required for the strategy."""
+        return max(self.ema_fast_period, self.ema_slow_period, self.atr_period) + 5
 
     def _is_pullback_to_support(self, df: pd.DataFrame, lookback: int = 3) -> bool:
         if len(df) < lookback + 1:
@@ -57,7 +65,7 @@ class DAXSRBreakoutStrategy(AbstractStrategy):
         return True
 
     def get_signal(self, df: pd.DataFrame, bar_idx: int = -1) -> Optional[Signal]:
-        if len(df) < max(self.ema_fast_period, self.ema_slow_period, self.atr_period) + 5:
+        if len(df) < self.required_bars():
             return None
 
         current = df.iloc[bar_idx]

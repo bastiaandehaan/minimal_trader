@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List
 
 import numpy as np
 import pandas as pd
