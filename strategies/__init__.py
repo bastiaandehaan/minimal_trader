@@ -1,3 +1,1 @@
-
-STRATEGY_REGISTRY = {
-    "dax_sr_breakout": DAXSRBreakoutStrategy,
+from .rsi_reversion import RSIReversionStrategy
